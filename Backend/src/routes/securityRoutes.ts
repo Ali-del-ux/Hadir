@@ -6,14 +6,54 @@ import { pool } from '../config/database';
 
 const router = Router();
 
-// Helper function to verify TOTP code (RFC 6238 standard)
-function verifyTOTP(secret: string, token: string): boolean {
+// Standard RFC 4648 Base32 alphabet for TOTP (Google Authenticator / Authy / RFC 6238)
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(buffer: Buffer): string {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (let i = 0; i < buffer.length; i++) {
+    value = (value << 8) | buffer[i];
+    bits += 8;
+    while (bits >= 5) {
+      output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) {
+    output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  }
+  return output;
+}
+
+function base32Decode(base32Str: string): Buffer {
+  const cleaned = base32Str.toUpperCase().replace(/=+$/, '').replace(/\s+/g, '');
+  let bits = 0;
+  let value = 0;
+  const bytes: number[] = [];
+  for (let i = 0; i < cleaned.length; i++) {
+    const idx = BASE32_ALPHABET.indexOf(cleaned[i]);
+    if (idx === -1) continue;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+// RFC 6238 compliant TOTP verification with +-1 window tolerance
+function verifyTOTP(base32Secret: string, token: string): boolean {
   const window = 30; // 30s window
   const now = Math.floor(Date.now() / 1000);
+  const secretBuffer = base32Decode(base32Secret);
   
   for (let offset = -1; offset <= 1; offset++) {
     const timeSlice = Math.floor(now / window) + offset;
-    const hmac = crypto.createHmac('sha1', Buffer.from(secret, 'utf-8'));
+    const hmac = crypto.createHmac('sha1', secretBuffer);
     const timeBuffer = Buffer.alloc(8);
     timeBuffer.writeBigInt64BE(BigInt(timeSlice));
     hmac.update(timeBuffer);
@@ -58,15 +98,15 @@ router.get('/status', async (req: any, res) => {
   }
 });
 
-// 2. POST /api/security/2fa/generate - Generate 2FA secret
+// 2. POST /api/security/2fa/generate - Generate RFC 6238 Base32 2FA secret
 router.post('/2fa/generate', async (req: any, res) => {
   try {
     const userId = req.user.userId;
     const [rows] = await pool.execute<any[]>(`SELECT email FROM users WHERE id = ?`, [userId]);
     const email = rows[0]?.email || 'user@hadir.edu';
 
-    // Generate random 20-character secret
-    const secret = crypto.randomBytes(10).toString('hex').toUpperCase();
+    // Generate standard 128-bit key encoded in Base32 (compatible with Google Authenticator)
+    const secret = base32Encode(crypto.randomBytes(16));
     const otpauthUrl = `otpauth://totp/Hadir:${email}?secret=${secret}&issuer=Hadir%20LMS`;
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpauthUrl)}`;
 
@@ -122,8 +162,8 @@ router.post('/2fa/disable', async (req: any, res) => {
       return res.status(400).json({ success: false, message: 'كلمة المرور مطلوبة لإلغاء تفعيل 2FA' });
     }
 
-    const [rows] = await pool.execute<any[]>(`SELECT password FROM users WHERE id = ?`, [userId]);
-    const valid = await bcrypt.compare(password, rows[0]?.password || '');
+    const [rows] = await pool.execute<any[]>(`SELECT password_hash FROM users WHERE id = ?`, [userId]);
+    const valid = await bcrypt.compare(password, rows[0]?.password_hash || '');
     if (!valid) {
       return res.status(400).json({ success: false, message: 'كلمة المرور الحالية غير صحيحة' });
     }

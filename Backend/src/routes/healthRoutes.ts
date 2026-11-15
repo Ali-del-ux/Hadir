@@ -59,6 +59,9 @@ router.get('/ready', async (_req: Request, res: Response) => {
   // --- Check 2: Uploads directory accessible ---
   const uploadsDir = path.resolve(__dirname, '../../uploads');
   try {
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
     fs.accessSync(uploadsDir, fs.constants.R_OK | fs.constants.W_OK);
     checks.storage = { status: 'ok' };
   } catch {
@@ -69,14 +72,13 @@ router.get('/ready', async (_req: Request, res: Response) => {
   // --- Check 3: Backup directory writable ---
   const backupDir = path.resolve(__dirname, '../../backups');
   try {
-    fs.mkdirSync(backupDir, { recursive: true });
-    // Try creating then deleting a temp file to confirm write access
-    const testFile = path.join(backupDir, '.write-probe');
-    fs.writeFileSync(testFile, '1');
-    fs.unlinkSync(testFile);
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+    }
+    fs.accessSync(backupDir, fs.constants.R_OK | fs.constants.W_OK);
     checks.backups = { status: 'ok' };
   } catch {
-    checks.backups = { status: 'error', detail: 'Backup directory is not writable' };
+    checks.backups = { status: 'error', detail: 'Backup directory is not accessible' };
     isReady = false;
   }
 

@@ -217,7 +217,7 @@ function EditUserDialog({ user, onClose, onUpdate }: EditUserDialogProps) {
       const ok = window.confirm('هل أنت متأكد من تغيير كلمة المرور لهذا المستخدم؟');
       if (!ok) return;
       try {
-        await api.post(`/admin/users/${user.id}/password`, { newPassword: newPassword.trim() });
+        await api.post(`/admin/users/${user.id}/password`, { password: newPassword.trim(), newPassword: newPassword.trim() });
         toast({ title: 'نجاح', description: 'تم تغيير كلمة المرور بنجاح' });
       } catch (err: any) {
         toast({ title: 'خطأ', description: err.message || 'فشل تغيير كلمة المرور', variant: 'destructive' });

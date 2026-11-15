@@ -298,7 +298,7 @@ export const gradeSubmission = async (
       throw new Error('You are not authorized to grade this submission');
     }
 
-    if (!gradeData.grade) {
+    if (gradeData.grade === undefined || gradeData.grade === null || String(gradeData.grade).trim() === '') {
       throw new Error('Grade is required');
     }
 

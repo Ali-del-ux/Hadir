@@ -29,8 +29,11 @@ export const updateUserSchema = z.object({
 
 export const resetPasswordSchema = z.object({
   body: z.object({
-    password: z.string().min(6, 'Password must be at least 6 characters').max(100, 'Password is too long'),
-  }).strict(),
+    password: z.string().min(6, 'Password must be at least 6 characters').max(100, 'Password is too long').optional(),
+    newPassword: z.string().min(6, 'Password must be at least 6 characters').max(100, 'Password is too long').optional(),
+  }).refine((data) => Boolean(data.password || data.newPassword), {
+    message: 'Password must be at least 6 characters',
+  }),
 });
 
 export const getUsersSchema = z.object({

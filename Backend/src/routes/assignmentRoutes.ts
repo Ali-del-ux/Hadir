@@ -197,7 +197,7 @@ teacherRoutes.post('/submissions/:id/grade', async (req: any, res, next) => {
     const teacherId = req.user?.userId;
     const gradeData = req.body as assignmentSubmissionService.GradeAssignmentRequest;
 
-    if (!gradeData.grade) {
+    if (gradeData.grade === undefined || gradeData.grade === null || String(gradeData.grade).trim() === '') {
       return res.status(400).json({
         success: false,
         message: 'Grade is required',

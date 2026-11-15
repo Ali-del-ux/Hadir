@@ -109,7 +109,7 @@ router.put('/users/:id', validateRequest(updateUserSchema), async (req, res, nex
 // POST /api/admin/users/:id/password
 router.post('/users/:id/password', validateRequest(resetPasswordSchema), async (req, res, next) => {
   try {
-    const { password } = req.body;
+    const password = req.body.password || req.body.newPassword;
     if (!password) return res.status(400).json({ success: false, message: 'Password is required' });
 
     await userService.adminResetPassword(req.params.id as string, password);

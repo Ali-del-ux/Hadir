@@ -119,7 +119,7 @@ teacherRoutes.post('/', uploadMiddleware, checkCourseOwnership, async (req: any,
 });
 
 // PUT /api/lectures/teacher/:id - Update lecture
-teacherRoutes.put('/:id', checkLectureOwnership, async (req: any, res, next) => {
+teacherRoutes.put('/:id', checkLectureOwnership, validateRequest(updateLectureSchema), async (req: any, res, next) => {
   try {
     const teacherId = req.user?.userId;
     const lectureData = req.body as lectureService.UpdateLectureRequest;

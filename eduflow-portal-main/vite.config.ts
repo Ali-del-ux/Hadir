@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
+import { mockServerPlugin } from "./mockServerPlugin";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
@@ -24,7 +25,7 @@ export default defineConfig(({ mode }) => ({
     port: 8091,
     strictPort: false,
   },
-  plugins: [react()],
+  plugins: [react(), mockServerPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

@@ -17,7 +17,7 @@ teacherRoutes.use(authenticate);
 teacherRoutes.use(authorize(ROLES.TEACHER, ROLES.ADMIN));
 
 // POST /api/attendance/sessions - Create attendance session
-teacherRoutes.post('/sessions', checkCourseOwnership, async (req: any, res, next) => {
+teacherRoutes.post('/sessions', checkCourseOwnership, validateRequest(createSessionSchema), async (req: any, res, next) => {
   try {
     const teacherId = req.user?.userId;
     const { course_id, date, time } = req.body;
@@ -201,7 +201,7 @@ studentRoutes.use(authenticate);
 studentRoutes.use(authorize(ROLES.STUDENT));
 
 // POST /api/attendance/scan - Scan QR code and mark attendance
-studentRoutes.post('/scan', async (req: any, res, next) => {
+studentRoutes.post('/scan', validateRequest(recordAttendanceByStudentSchema), async (req: any, res, next) => {
   try {
     const studentId = req.user?.userId;
     const { qr_code, device_fingerprint } = req.body;

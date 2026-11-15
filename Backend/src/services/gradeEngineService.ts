@@ -190,6 +190,15 @@ export async function setStudentGrade(params: {
 }): Promise<void> {
   const { courseId, studentId, gradeItemId, score, gradedBy } = params;
 
+  // التحقق من صلاحية المعلم للمقرر
+  const [courseRows] = await pool.execute<RowDataPacket[]>(
+    `SELECT id FROM courses WHERE id = ? AND teacher_id = ?`,
+    [courseId, gradedBy]
+  );
+  if (courseRows.length === 0) {
+    throw new Error('غير مصرح لك برصد درجات هذا المقرر');
+  }
+
   // التحقق من أن البند تابع لنفس المادة
   const [itemRows] = await pool.execute<RowDataPacket[]>(
     `SELECT id, max_score FROM course_grade_items WHERE id = ? AND course_id = ?`,

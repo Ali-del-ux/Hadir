@@ -23,6 +23,7 @@ import attendanceRoutes from './routes/attendanceRoutes';
 import lectureRoutes from './routes/lectureRoutes';
 import assignmentRoutes from './routes/assignmentRoutes';
 import courseRoutes from './routes/courseRoutes';
+import teacherRoutes from './routes/teacherRoutes';
 import reportsRoutes from './routes/reportsRoutes';
 import gradeRoutes from './routes/gradeRoutes';
 import financialRoutes from './routes/financialRoutes';
@@ -180,6 +181,7 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/lectures',   lectureRoutes);
 app.use('/api/assignments', assignmentRoutes);
 app.use('/api/courses',    courseRoutes);
+app.use('/api/teacher',    teacherRoutes);
 app.use('/api/reports',    reportsRoutes);
 app.use('/api/grades',     gradeRoutes);
 

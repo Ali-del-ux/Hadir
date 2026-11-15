@@ -2,11 +2,13 @@ import { calculateStudentGPA } from '../services/gradeEngineService';
 import { Router } from 'express';
 import { pool } from '../config/database';
 import { authenticate } from '../middleware/authenticate';
+import { authorize } from '../middleware/authorize';
+import { ROLES } from '../utils/permissions';
 
 const router = Router();
 
-// Admin Stats
-router.get('/admin', authenticate, async (req: any, res) => {
+// Admin Stats - strictly admin only
+router.get('/admin', authenticate, authorize(ROLES.ADMIN), async (req: any, res) => {
     try {
         const [users] = await pool.execute<any[]>('SELECT count(*) as count FROM users');
         const [admins] = await pool.execute<any[]>('SELECT count(*) as count FROM admin_accounts');
@@ -30,8 +32,8 @@ router.get('/admin', authenticate, async (req: any, res) => {
     }
 });
 
-// Teacher Stats
-router.get('/teacher', authenticate, async (req: any, res) => {
+// Teacher Stats - teacher and admin
+router.get('/teacher', authenticate, authorize(ROLES.TEACHER, ROLES.ADMIN), async (req: any, res) => {
     try {
         const teacherId = req.user.userId;
 
@@ -49,7 +51,7 @@ router.get('/teacher', authenticate, async (req: any, res) => {
             totalStudents = studentsRow[0]?.count || 0;
         }
 
-        const avgAttendance = 0; // Keeping simple as before
+        const avgAttendance = 0;
 
         res.json({
             success: true,
@@ -66,8 +68,8 @@ router.get('/teacher', authenticate, async (req: any, res) => {
     }
 });
 
-// Student Stats
-router.get('/student', authenticate, async (req: any, res) => {
+// Student Stats - student and admin
+router.get('/student', authenticate, authorize(ROLES.STUDENT, ROLES.ADMIN), async (req: any, res) => {
     try {
         const userId = req.user.userId;
 
@@ -108,7 +110,7 @@ router.get('/student', authenticate, async (req: any, res) => {
             success: true,
             data: {
                 enrolledCourses: enrollments.length,
-                attendanceRate: Math.min(100, avg), // Cap at 100% just in case
+                attendanceRate: Math.min(100, avg),
                 assignmentsCompleted: 0,
                 courses: coursesWithStats
             }
@@ -121,15 +123,20 @@ router.get('/student', authenticate, async (req: any, res) => {
 });
 
 // Teacher: Get specific course details (students & attendance & grades)
-router.get('/teacher/course/:courseId', authenticate, async (req: any, res) => {
+router.get('/teacher/course/:courseId', authenticate, authorize(ROLES.TEACHER, ROLES.ADMIN), async (req: any, res) => {
     try {
         const { courseId } = req.params;
 
-        const [courseRows] = await pool.execute<any[]>('SELECT name, code FROM courses WHERE id = ?', [courseId]);
+        const [courseRows] = await pool.execute<any[]>('SELECT id, name, code, teacher_id FROM courses WHERE id = ?', [courseId]);
         if (courseRows.length === 0) {
             return res.status(404).json({ success: false, message: 'Course not found' });
         }
         const course = courseRows[0];
+
+        // Verify teacher ownership if not admin
+        if (req.user.role !== ROLES.ADMIN && course.teacher_id !== req.user.userId) {
+            return res.status(403).json({ success: false, message: 'Access denied. You do not teach this course.' });
+        }
 
         const [students] = await pool.execute<any[]>(
             `SELECT 
@@ -184,10 +191,21 @@ router.get('/teacher/course/:courseId', authenticate, async (req: any, res) => {
 });
 
 // Teacher: Update grades and attendance for a course
-router.put('/teacher/course/:courseId/update', authenticate, async (req: any, res) => {
+router.put('/teacher/course/:courseId/update', authenticate, authorize(ROLES.TEACHER, ROLES.ADMIN), async (req: any, res) => {
     try {
         const { courseId } = req.params;
-        const { updates } = req.body; // updates: [{ studentId: '...', finalGrade: 'A', attendanceOverride: 2 }, ...]
+        const { updates } = req.body;
+
+        const [courseRows] = await pool.execute<any[]>('SELECT id, teacher_id FROM courses WHERE id = ?', [courseId]);
+        if (courseRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Course not found' });
+        }
+        const course = courseRows[0];
+
+        // Verify teacher ownership if not admin
+        if (req.user.role !== ROLES.ADMIN && course.teacher_id !== req.user.userId) {
+            return res.status(403).json({ success: false, message: 'Access denied. You do not teach this course.' });
+        }
 
         if (!Array.isArray(updates)) {
             return res.status(400).json({ success: false, message: 'Invalid payload' });

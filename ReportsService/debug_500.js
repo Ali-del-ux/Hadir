@@ -14,7 +14,7 @@ const pool = mysql.createPool({
 
 async function testQuery() {
     try {
-        const courseId = 2; // Assuming course ID 2 triggers the error based on screenshot
+        const courseId = 2; // Test course ID
 
         console.log('Testing query for courseId:', courseId);
 
@@ -25,9 +25,9 @@ async function testQuery() {
                 u.student_id, 
                 u.avatar,
                 (SELECT count(*) FROM attendance_records ar 
-                 JOIN attendance a ON ar.attendance_id = a.id 
-                 WHERE a.course_id = ? AND ar.student_id = u.id AND ar.status = 'present') as attended_count,
-                (SELECT count(DISTINCT session_id) FROM attendance WHERE course_id = ?) as total_lectures
+                 JOIN attendance_sessions s ON ar.session_id = s.id 
+                 WHERE s.course_id = ? AND ar.student_id = u.id AND ar.status = 'present') as attended_count,
+                (SELECT count(DISTINCT s2.id) FROM attendance_sessions s2 WHERE s2.course_id = ?) as total_lectures
              FROM enrollments e
              JOIN users u ON e.student_id = u.id
              WHERE e.course_id = ? AND e.status = 'active'`,
