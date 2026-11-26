@@ -13,8 +13,15 @@ export function StudentHome({ onNavigate }: StudentHomeProps) {
   const { user } = useAuth();
   const [courses, setCourses] = useState<Course[]>([]);
   const [activeSession, setActiveSession] = useState<any>(null);
-  const [gpaData, setGpaData] = useState<{ gpa: number; totalCredits: number; gradedCredits: number } | null>(null);
-  const [attendanceRate, setAttendanceRate] = useState<number>(100);
+  const [gpaData, setGpaData] = useState<{
+    gpa: number | null;
+    totalCredits: number;
+    gradedCredits: number;
+    attendanceRate?: number | null;
+    courses?: Array<{ attendancePercentage?: number | null }>;
+  } | null>(null);
+  const [attendanceRate, setAttendanceRate] = useState<number | null>(null);
+  const [frozenMessage, setFrozenMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -24,19 +31,44 @@ export function StudentHome({ onNavigate }: StudentHomeProps) {
   const loadDashboardData = async () => {
     try {
       setLoading(true);
-      const [coursesData, gpaRes, activeSessionsRes] = await Promise.all([
-        getStudentCourses().catch(() => []),
-        api.get('/grades/student/gpa').catch(() => ({ success: false })),
-        api.get('/attendance/student/sessions/active').catch(() => ({ success: false, data: [] }))
+      setFrozenMessage(user?.is_frozen ? (user.freeze_reason || 'حسابك مجمد أكاديمياً لمراجعة الشؤون المالية.') : null);
+
+      const handleErr = (err: any, fallback: any) => {
+        if (err && (err.code === 'ACCOUNT_FROZEN' || String(err.message || '').includes('تجميد') || String(err.message || '').includes('مجمد'))) {
+          setFrozenMessage(err.message || 'تم تجميد حسابك الأكاديمي لمراجعة الشؤون المالية.');
+        }
+        return fallback;
+      };
+
+      const [coursesData, gpaRes, activeSessionsRes, reportsRes] = await Promise.all([
+        getStudentCourses().catch((e) => handleErr(e, [])),
+        api.get('/grades/student/gpa').catch((e) => handleErr(e, { success: false })),
+        api.get('/attendance/student/sessions/active').catch((e) => handleErr(e, { success: false, data: [] })),
+        api.get('/reports/student').catch(() => ({ success: false }))
       ]);
 
-      setCourses(coursesData);
-      
-      if (gpaRes.success && gpaRes.data) {
-        setGpaData(gpaRes.data);
+      setCourses(Array.isArray(coursesData) ? coursesData : []);
+
+      const gpaPayload = gpaRes?.success && gpaRes.data ? gpaRes.data : null;
+      if (gpaPayload) {
+        setGpaData(gpaPayload);
       }
 
-      if (activeSessionsRes.success && activeSessionsRes.data && activeSessionsRes.data.length > 0) {
+      const reportsPayload = reportsRes?.success && reportsRes.data ? reportsRes.data : null;
+      if (gpaPayload?.attendanceRate !== undefined) {
+        setAttendanceRate(gpaPayload.attendanceRate);
+      } else if (reportsPayload?.attendanceRate !== undefined) {
+        setAttendanceRate(reportsPayload.attendanceRate);
+      } else if (gpaPayload?.courses && Array.isArray(gpaPayload.courses)) {
+        const validAtt = gpaPayload.courses
+          .map((c: any) => c.attendancePercentage)
+          .filter((v: any) => typeof v === 'number');
+        setAttendanceRate(validAtt.length > 0 ? Math.round((validAtt.reduce((a: number, b: number) => a + b, 0) / validAtt.length) * 10) / 10 : null);
+      } else {
+        setAttendanceRate(null);
+      }
+
+      if (activeSessionsRes?.success && activeSessionsRes.data && activeSessionsRes.data.length > 0) {
         setActiveSession(activeSessionsRes.data[0]);
       } else {
         setActiveSession(null);
@@ -80,29 +112,42 @@ export function StudentHome({ onNavigate }: StudentHomeProps) {
           </div>
 
           {/* Quick Metrics Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {/* GPA Card */}
             <div className="bg-white/10 backdrop-blur-md border border-white/20 p-3.5 rounded-2xl text-center text-white shadow-sm">
               <span className="text-[11px] text-white/80 block font-medium">المعدل التراكمي</span>
               <div className="text-2xl sm:text-3xl font-black my-0.5 text-white">
-                {gpaData?.gpa !== undefined && gpaData.gpa !== null ? Number(gpaData.gpa).toFixed(2) : '4.00'}
+                {gpaData && gpaData.gradedCredits > 0 && gpaData.gpa !== null && gpaData.gpa !== undefined
+                  ? Number(gpaData.gpa).toFixed(2)
+                  : '—'}
               </div>
               <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-400/25 text-emerald-200 border border-emerald-400/40">
-                {gpaData ? getGpaTier(gpaData.gpa).label : 'امتياز'}
+                {gpaData && gpaData.gradedCredits > 0 && gpaData.gpa !== null && gpaData.gpa !== undefined
+                  ? getGpaTier(gpaData.gpa).label
+                  : 'لا توجد درجات مقيمة بعد'}
               </span>
+            </div>
+
+            {/* Attendance Rate Card */}
+            <div className="bg-white/10 backdrop-blur-md border border-white/20 p-3.5 rounded-2xl text-center text-white shadow-sm">
+              <span className="text-[11px] text-white/80 block font-medium">نسبة الحضور</span>
+              <div className="text-2xl sm:text-3xl font-black my-0.5 text-white">
+                {attendanceRate !== null && attendanceRate !== undefined ? `${attendanceRate}%` : '—'}
+              </div>
+              <span className="text-[10px] text-white/80">متوسط الالتزام</span>
             </div>
 
             {/* Credit Hours Card */}
             <div className="bg-white/10 backdrop-blur-md border border-white/20 p-3.5 rounded-2xl text-center text-white shadow-sm">
               <span className="text-[11px] text-white/80 block font-medium">الساعات المعتمدة</span>
               <div className="text-2xl sm:text-3xl font-black my-0.5 text-white">
-                {gpaData?.totalCredits || courses.reduce((acc, c) => acc + (c.credit_hours || 3), 0)}
+                {gpaData?.totalCredits ?? courses.reduce((acc, c) => acc + (c.credit_hours || 3), 0)}
               </div>
               <span className="text-[10px] text-white/80">ساعة مسجلة</span>
             </div>
 
             {/* Courses Count */}
-            <div className="col-span-2 sm:col-span-1 bg-white/10 backdrop-blur-md border border-white/20 p-3.5 rounded-2xl text-center text-white shadow-sm">
+            <div className="bg-white/10 backdrop-blur-md border border-white/20 p-3.5 rounded-2xl text-center text-white shadow-sm">
               <span className="text-[11px] text-white/80 block font-medium">المقررات الحالية</span>
               <div className="text-2xl sm:text-3xl font-black my-0.5 text-white">{courses.length}</div>
               <span className="text-[10px] text-white/80">مقرر دراسي</span>
@@ -110,6 +155,31 @@ export function StudentHome({ onNavigate }: StudentHomeProps) {
           </div>
         </div>
       </div>
+
+      {/* ========================================================
+          ACCOUNT FROZEN NOTICE (Only if discovered dynamically mid-session; otherwise StudentDashboard renders top banner)
+          ======================================================== */}
+      {(!user?.is_frozen && frozenMessage) && (
+        <div className="p-5 rounded-3xl bg-destructive/10 border-2 border-destructive/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-6 h-6 text-destructive shrink-0 mt-0.5" />
+            <div>
+              <h3 className="font-extrabold text-sm sm:text-base text-destructive">حسابك مجمد أكاديمياً</h3>
+              <p className="text-xs text-foreground/90 mt-0.5">
+                {frozenMessage || user?.freeze_reason || 'تم تجميد حسابك مؤقتاً لمراجعة الشؤون المالية ولا يمكنك تسجيل الحضور.'}
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => onNavigate('financials')}
+            className="shrink-0 font-bold text-xs rounded-xl"
+          >
+            مراجعة السجل المالي
+          </Button>
+        </div>
+      )}
 
       {/* ========================================================
           ACTIVE SESSION ALERT (If session is live now)
@@ -132,7 +202,7 @@ export function StudentHome({ onNavigate }: StudentHomeProps) {
               </h3>
               <p className="text-xs text-muted-foreground flex items-center gap-1.5 mt-0.5">
                 <Clock className="w-3.5 h-3.5" />
-                {activeSession.date} • {activeSession.time}
+                {activeSession.date || 'اليوم'} • {activeSession.time || '10:00 صباحاً'} • {activeSession.room || 'المدرج الرئيسي'}
               </p>
             </div>
           </div>
@@ -247,7 +317,7 @@ export function StudentHome({ onNavigate }: StudentHomeProps) {
                 <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t border-border/40">
                   <span className="flex items-center gap-1">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                    المحاضر: د. {course.teacher_name || 'أستاذ المقرر'}
+                    المحاضر: {course.teacher_name?.startsWith('د.') ? course.teacher_name : `د. ${course.teacher_name || 'أستاذ المقرر'}`}
                   </span>
                   <span className="text-primary font-semibold flex items-center gap-1 group-hover:-translate-x-1 transition-transform">
                     تفاصيل المادة

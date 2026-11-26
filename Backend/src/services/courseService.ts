@@ -4,23 +4,27 @@ import { pool } from '../config/database';
 export interface CreateCourseRequest {
   code: string;
   name: string;
-  teacher_id?: string;
-  description?: string;
-  credit_hours?: number;
-  schedule_day?: string;
-  schedule_time?: string;
-  room?: string;
+  teacher_id?: string | null;
+  description?: string | null;
+  credit_hours?: number | null;
+  semester?: string | null;
+  capacity?: number | null;
+  schedule_day?: string | null;
+  schedule_time?: string | null;
+  room?: string | null;
 }
 
 export interface UpdateCourseRequest {
   code?: string;
   name?: string;
-  teacher_id?: string;
-  description?: string;
-  credit_hours?: number;
-  schedule_day?: string;
-  schedule_time?: string;
-  room?: string;
+  teacher_id?: string | null;
+  description?: string | null;
+  credit_hours?: number | null;
+  semester?: string | null;
+  capacity?: number | null;
+  schedule_day?: string | null;
+  schedule_time?: string | null;
+  room?: string | null;
 }
 
 // Get all courses
@@ -36,9 +40,9 @@ export const getAllCourses = async (search?: string) => {
         c.credit_hours,
         c.semester,
         c.capacity,
-        c.credit_hours,
-        c.semester,
-        c.capacity,
+        c.schedule_day,
+        c.schedule_time,
+        c.room,
         u.name AS teacher_name,
         u.department AS teacher_department,
         COUNT(DISTINCT e.student_id) AS students_count,
@@ -74,6 +78,9 @@ export const getAllCourses = async (search?: string) => {
       credit_hours: parseInt(row.credit_hours) || 3,
       semester: row.semester || null,
       capacity: row.capacity ? parseInt(row.capacity) : 50,
+      schedule_day: row.schedule_day || 'الأحد - الثلاثاء',
+      schedule_time: row.schedule_time || '09:00 ص - 10:30 ص',
+      room: row.room || 'قاعة 101',
       students_count: parseInt(row.students_count) || 0,
       lectures_count: parseInt(row.lectures_count) || 0,
       created_at: row.created_at,
@@ -95,6 +102,9 @@ export const getCourseById = async (courseId: string) => {
         c.name,
         c.description,
         c.teacher_id,
+        c.credit_hours,
+        c.semester,
+        c.capacity,
         c.schedule_day,
         c.schedule_time,
         c.room,
@@ -114,7 +124,6 @@ export const getCourseById = async (courseId: string) => {
 
     const row = rows[0];
 
-    // Get enrolled students
     const [enrollments] = await pool.execute<any[]>(
       `SELECT student_id FROM enrollments 
        WHERE course_id = ? AND status = 'active'`,
@@ -129,10 +138,14 @@ export const getCourseById = async (courseId: string) => {
       teacher_id: row.teacher_id,
       teacher_name: row.teacher_name,
       teacher_department: row.teacher_department,
-      schedule_day: row.schedule_day,
-      schedule_time: row.schedule_time,
-      room: row.room,
+      credit_hours: parseInt(row.credit_hours) || 3,
+      semester: row.semester || null,
+      capacity: row.capacity ? parseInt(row.capacity) : 50,
+      schedule_day: row.schedule_day || 'الأحد - الثلاثاء',
+      schedule_time: row.schedule_time || '09:00 ص - 10:30 ص',
+      room: row.room || 'قاعة 101',
       students: enrollments.map((e: any) => e.student_id),
+      students_count: enrollments.length,
       created_at: row.created_at,
       updated_at: row.updated_at,
     };
@@ -145,17 +158,15 @@ export const getCourseById = async (courseId: string) => {
 // Create course
 export const createCourse = async (courseData: CreateCourseRequest) => {
   try {
-    // Check if code already exists
     const [existing] = await pool.execute<any[]>(
       `SELECT id FROM courses WHERE code = ? AND deleted_at IS NULL`,
-      [courseData.code]
+      [courseData.code.toUpperCase()]
     );
 
     if (existing.length > 0) {
       throw new Error('Course code already exists');
     }
 
-    // Validate teacher if provided
     if (courseData.teacher_id) {
       const [teacher] = await pool.execute<any[]>(
         `SELECT id FROM users WHERE id = ? AND role = 'teacher' AND deleted_at IS NULL`,
@@ -168,19 +179,28 @@ export const createCourse = async (courseData: CreateCourseRequest) => {
     }
 
     const courseId = `course_${Date.now()}`;
+    const creditHours = courseData.credit_hours ? Number(courseData.credit_hours) : 3;
+    const capacity = courseData.capacity ? Number(courseData.capacity) : 50;
 
     await pool.execute(
-      `INSERT INTO courses (id, code, name, teacher_id, description)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO courses (id, code, name, teacher_id, description, credit_hours, semester, capacity, schedule_day, schedule_time, room)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         courseId,
         courseData.code.toUpperCase(),
         courseData.name,
         courseData.teacher_id || null,
         courseData.description || null,
+        creditHours,
+        courseData.semester || null,
+        capacity,
+        courseData.schedule_day || 'الأحد - الثلاثاء',
+        courseData.schedule_time || '09:00 ص - 10:30 ص',
+        courseData.room || 'قاعة 101',
       ]
     );
 
+    // Auto-create default grade items (Attendance 10%, Assignments 20%, Midterm 30%, Final 40%)
     await getGradeItems(courseId);
     return await getCourseById(courseId);
   } catch (error: any) {
@@ -192,18 +212,16 @@ export const createCourse = async (courseData: CreateCourseRequest) => {
 // Update course
 export const updateCourse = async (courseId: string, courseData: UpdateCourseRequest) => {
   try {
-    // Check if course exists
     const existing = await getCourseById(courseId);
     if (!existing) {
       throw new Error('Course not found');
     }
 
-    // Check if code conflicts
     if (courseData.code) {
       const [conflicts] = await pool.execute<any[]>(
         `SELECT id FROM courses 
          WHERE id != ? AND code = ? AND deleted_at IS NULL`,
-        [courseId, courseData.code]
+        [courseId, courseData.code.toUpperCase()]
       );
 
       if (conflicts.length > 0) {
@@ -211,7 +229,6 @@ export const updateCourse = async (courseId: string, courseData: UpdateCourseReq
       }
     }
 
-    // Validate teacher if provided
     if (courseData.teacher_id) {
       const [teacher] = await pool.execute<any[]>(
         `SELECT id FROM users WHERE id = ? AND role = 'teacher' AND deleted_at IS NULL`,
@@ -223,7 +240,6 @@ export const updateCourse = async (courseId: string, courseData: UpdateCourseReq
       }
     }
 
-    // Build update query
     const updates: string[] = [];
     const params: any[] = [];
 
@@ -242,6 +258,18 @@ export const updateCourse = async (courseId: string, courseData: UpdateCourseReq
     if (courseData.description !== undefined) {
       updates.push('description = ?');
       params.push(courseData.description || null);
+    }
+    if (courseData.credit_hours !== undefined && courseData.credit_hours !== null) {
+      updates.push('credit_hours = ?');
+      params.push(Number(courseData.credit_hours));
+    }
+    if (courseData.semester !== undefined) {
+      updates.push('semester = ?');
+      params.push(courseData.semester || null);
+    }
+    if (courseData.capacity !== undefined && courseData.capacity !== null) {
+      updates.push('capacity = ?');
+      params.push(Number(courseData.capacity));
     }
     if (courseData.schedule_day !== undefined) {
       updates.push('schedule_day = ?');
@@ -368,7 +396,7 @@ export const getCoursesByStudentId = async (studentId: string) => {
         c.updated_at
       FROM courses c
       LEFT JOIN users u ON c.teacher_id = u.id
-      LEFT JOIN enrollments e ON c.id = e.course_id AND e.status = 'active'
+      JOIN enrollments e ON c.id = e.course_id AND e.status = 'active'
       LEFT JOIN enrollments e2 ON c.id = e2.course_id AND e2.status = 'active'
       LEFT JOIN lectures l ON c.id = l.course_id AND l.deleted_at IS NULL
       WHERE e.student_id = ? AND c.deleted_at IS NULL
@@ -402,7 +430,8 @@ export const getCoursesByStudentId = async (studentId: string) => {
 export const getEnrolledStudents = async (courseId: string) => {
   try {
     const [rows] = await pool.execute<any[]>(
-      `SELECT u.id, u.name, u.email, u.student_id, u.academic_year, e.enrolled_at, e.status
+      `SELECT u.id, u.name, u.email, u.student_id, u.academic_year,
+              e.enrolled_at, e.enrolled_at AS enrollment_date, e.status
        FROM enrollments e
        JOIN users u ON e.student_id = u.id
        WHERE e.course_id = ? AND e.status = 'active'

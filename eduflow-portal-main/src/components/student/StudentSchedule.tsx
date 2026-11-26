@@ -159,7 +159,7 @@ export function StudentSchedule({ onBack }: StudentScheduleProps) {
               <div className="pt-2 border-t border-border/40 flex items-center justify-between text-xs text-muted-foreground">
                 <div className="flex items-center gap-1.5">
                   <User className="w-3.5 h-3.5 text-primary" />
-                  <span>المحاضر: <strong className="text-foreground font-semibold">د. {course.teacher_name || 'أستاذ المادة'}</strong></span>
+                  <span>المحاضر: <strong className="text-foreground font-semibold">{course.teacher_name?.startsWith('د.') ? course.teacher_name : `د. ${course.teacher_name || 'أستاذ المادة'}`}</strong></span>
                 </div>
                 <span className="flex items-center gap-1 text-emerald-500 font-semibold">
                   <CheckCircle2 className="w-3.5 h-3.5" />

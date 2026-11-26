@@ -22,9 +22,10 @@ export function LoginPage({ forceShow }: LoginPageProps) {
   // 2FA state
   const [require2FA, setRequire2FA] = useState(false);
   const [totpCode, setTotpCode] = useState('');
+  const [tempToken, setTempToken] = useState('');
   const [tempUserId, setTempUserId] = useState('');
 
-  const { user, isAuthenticated, login, logout } = useAuth();
+  const { user, isAuthenticated, login, verify2FA } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -47,9 +48,17 @@ export function LoginPage({ forceShow }: LoginPageProps) {
     setLoading(true);
 
     try {
-      // Check if user has 2FA enabled
       const result = await login(identifier.trim(), password);
       setLoading(false);
+
+      if (result.requires2FA) {
+        setRequire2FA(true);
+        setTempToken(result.tempToken || '');
+        setTempUserId(result.tempUserId || '');
+        setTotpCode('');
+        toast({ title: 'التحقق الثنائي مطلوب', description: 'أدخل رمز المصادقة المكون من 6 أرقام من تطبيقك' });
+        return;
+      }
 
       if (!result.success) {
         toast({ title: 'فشل تسجيل الدخول', description: result.error || 'بيانات الدخول غير صحيحة', variant: 'destructive' });
@@ -60,6 +69,31 @@ export function LoginPage({ forceShow }: LoginPageProps) {
     } catch (err: any) {
       setLoading(false);
       toast({ title: 'خطأ', description: err.message || 'حدث خطأ في الاتصال بالخادم', variant: 'destructive' });
+    }
+  };
+
+  const handle2FASubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = totpCode.replace(/\D/g, '').slice(0, 6);
+    if (cleaned.length !== 6) {
+      toast({ title: 'تنبيه', description: 'يرجى إدخال رمز التحقق المكون من 6 أرقام', variant: 'destructive' });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await verify2FA(tempToken, cleaned, tempUserId);
+      setLoading(false);
+
+      if (!result.success) {
+        toast({ title: 'رمز غير صحيح', description: result.error || 'تأكد من الرمز وحاول مجدداً', variant: 'destructive' });
+      } else {
+        toast({ title: 'مرحباً بك', description: 'تم التحقق وتسجيل الدخول بنجاح' });
+        navigate('/', { replace: true });
+      }
+    } catch (err: any) {
+      setLoading(false);
+      toast({ title: 'خطأ', description: err.message || 'فشل التحقق الثنائي', variant: 'destructive' });
     }
   };
 
@@ -168,6 +202,57 @@ export function LoginPage({ forceShow }: LoginPageProps) {
           </div>
 
           {/* Form */}
+          {require2FA ? (
+            <form onSubmit={handle2FASubmit} className="bg-card p-6 sm:p-8 rounded-3xl shadow-lg border border-border space-y-5">
+              <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-primary/10 border border-primary/20">
+                <KeyRound className="w-5 h-5 text-primary shrink-0" />
+                <div className="text-xs">
+                  <div className="font-bold text-foreground">المصادقة الثنائية (2FA) مفعّلة</div>
+                  <div className="text-muted-foreground">أدخل الرمز المؤقت المكون من 6 أرقام من تطبيق المصادقة.</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-foreground block">رمز التحقق (6 أرقام)</label>
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="000000"
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="h-12 rounded-xl text-center font-mono text-2xl tracking-[0.4em]"
+                  dir="ltr"
+                  maxLength={6}
+                  autoFocus
+                  required
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setRequire2FA(false);
+                    setTotpCode('');
+                    setTempToken('');
+                  }}
+                  className="flex-1 h-11 rounded-xl"
+                >
+                  رجوع
+                </Button>
+                <Button
+                  type="submit"
+                  className="flex-1 h-11 bg-primary hover:bg-primary/95 text-primary-foreground text-sm font-bold rounded-xl shadow-md"
+                  disabled={loading || totpCode.length !== 6}
+                >
+                  {loading ? (
+                    <><Loader2 className="w-4 h-4 ml-2 animate-spin" />جاري التحقق...</>
+                  ) : 'تأكيد الدخول'}
+                </Button>
+              </div>
+            </form>
+          ) : (
           <form onSubmit={handleSubmit} className="bg-card p-6 sm:p-8 rounded-3xl shadow-lg border border-border space-y-5">
             
             <div className="space-y-4">
@@ -219,6 +304,7 @@ export function LoginPage({ forceShow }: LoginPageProps) {
               ) : 'تسجيل الدخول'}
             </Button>
           </form>
+          )}
 
           {/* Quick Demo Test Logins */}
           <div className="p-4 rounded-2xl bg-muted/40 border border-border space-y-2.5">

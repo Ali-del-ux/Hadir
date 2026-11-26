@@ -2,10 +2,19 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { User } from '@/types';
 import { apiRequest } from '@/lib/api';
 
+interface LoginResult {
+  success: boolean;
+  requires2FA?: boolean;
+  tempToken?: string;
+  tempUserId?: string;
+  error?: string;
+}
+
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
-  login: (identifier: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  login: (identifier: string, password: string) => Promise<LoginResult>;
+  verify2FA: (tempToken: string, totpCode: string, tempUserId?: string) => Promise<LoginResult>;
   logout: () => void;
   isLoading: boolean;
 }
@@ -42,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const login = async (identifier: string, password: string): Promise<{ success: boolean; error?: string }> => {
+  const login = async (identifier: string, password: string): Promise<LoginResult> => {
     setIsLoading(true);
 
     try {
@@ -51,7 +60,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ identifier, password }),
       });
 
-      if (data.success) {
+      if (data.success && data.requires_2fa) {
+        setIsLoading(false);
+        return {
+          success: false,
+          requires2FA: true,
+          tempToken: data.temp_token,
+          tempUserId: data.tempUserId,
+        };
+      }
+
+      if (data.success && data.token && data.user) {
         setUser(data.user);
         localStorage.setItem('hadir_token', data.token);
         localStorage.setItem('hadir_user', JSON.stringify(data.user));
@@ -70,6 +89,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const verify2FA = async (tempToken: string, totpCode: string, tempUserId?: string): Promise<LoginResult> => {
+    setIsLoading(true);
+
+    try {
+      const data = await apiRequest('/auth/login/2fa', {
+        method: 'POST',
+        body: JSON.stringify({ temp_token: tempToken, tempUserId, totp_code: totpCode }),
+      });
+
+      if (data.success && data.token && data.user) {
+        setUser(data.user);
+        localStorage.setItem('hadir_token', data.token);
+        localStorage.setItem('hadir_user', JSON.stringify(data.user));
+        setIsLoading(false);
+        return { success: true };
+      }
+
+      setIsLoading(false);
+      return { success: false, error: data.message || 'رمز التحقق الثنائي غير صحيح' };
+    } catch (error: any) {
+      setIsLoading(false);
+      return {
+        success: false,
+        error: error?.message || 'رمز التحقق الثنائي غير صحيح أو منتهي الصلاحية',
+      };
+    }
+  };
+
   const logout = () => {
     setUser(null);
     localStorage.removeItem('hadir_user');
@@ -80,7 +127,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, verify2FA, logout, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

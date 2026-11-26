@@ -18,12 +18,16 @@ interface CourseStat {
   id: string;
   name: string;
   code: string;
+  studentsCount?: number;
+  averageAttendance?: number | null;
+  averageGrade?: number | null;
+  averageScore?: number | null;
 }
 
 interface TeacherStats {
   totalCourses: number;
   totalStudents: number;
-  averageAttendance: number;
+  averageAttendance: number | null;
   courses: CourseStat[];
 }
 
@@ -34,34 +38,34 @@ export function TeacherReports() {
   const [loading, setLoading] = useState(true);
   const [openCourse, setOpenCourse] = useState<CourseStat | null>(null);
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const token = localStorage.getItem('hadir_token');
-        const res = await fetch(`${getReportsApiUrl()}/teacher`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-
-        if (!res.ok) throw new Error('Failed to fetch reports');
-
-        const data = await res.json();
-        if (data.success) {
-          setStats(data.data);
+  const fetchStats = async () => {
+    try {
+      const token = localStorage.getItem('hadir_token');
+      const res = await fetch(`${getReportsApiUrl()}/teacher`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
         }
-      } catch (error) {
-        console.error('Error fetching reports:', error);
-        toast({
-          variant: 'destructive',
-          title: 'خطأ',
-          description: 'فشل تحميل التقارير من الخادم المنفصل'
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
+      });
 
+      if (!res.ok) throw new Error('Failed to fetch reports');
+
+      const data = await res.json();
+      if (data.success) {
+        setStats(data.data);
+      }
+    } catch (error) {
+      console.error('Error fetching reports:', error);
+      toast({
+        variant: 'destructive',
+        title: 'خطأ',
+        description: 'فشل تحميل التقارير من الخادم المنفصل'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchStats();
   }, [toast]);
 
@@ -85,15 +89,24 @@ export function TeacherReports() {
         const data = await res.json();
         
         if (data.success && data.data.students) {
-          const wsData = data.data.students.map((s: any) => ({
-            'رقم القيد': s.studentId,
-            'اسم الطالب': s.name,
-            'المحاضرات الكلية': s.totalLectures,
-            'المحاضرات المحضورة': s.attendedLectures,
-            'تعديل الحضور': s.attendanceOverride,
-            'نسبة الحضور': `${s.attendancePercentage}%`,
-            'الدرجة': s.finalGrade || 'لم يتم الرصد'
-          }));
+          const wsData = data.data.students.map((s: any) => {
+            const totalLectures = s.totalLectures ?? s.total_lectures ?? 0;
+            const attendedLectures = s.attendedLectures ?? s.attended_count ?? 0;
+            const pct = s.attendancePercentage !== undefined ? s.attendancePercentage : s.attendance_rate;
+            const gradeVal =
+              s.finalGrade ||
+              s.letterGrade ||
+              (s.totalScore !== null && s.totalScore !== undefined ? `${s.totalScore}%` : 'لم يتم الرصد');
+            return {
+              'رقم القيد': s.studentId || s.student_id,
+              'اسم الطالب': s.name,
+              'المحاضرات الكلية': totalLectures,
+              'المحاضرات المحضورة': attendedLectures,
+              'تعديل الحضور': s.attendanceOverride || 0,
+              'نسبة الحضور': pct !== null && pct !== undefined ? `${pct}%` : '—',
+              'الدرجة': gradeVal,
+            };
+          });
           
           if (wsData.length > 0) {
             const ws = utils.json_to_sheet(wsData);
@@ -148,7 +161,11 @@ export function TeacherReports() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-3">
-        <StatCard value={`${stats.averageAttendance}%`} label="متوسط الحضور" variant="success" />
+        <StatCard
+          value={stats.averageAttendance !== null && stats.averageAttendance !== undefined ? `${stats.averageAttendance}%` : '—'}
+          label="متوسط الحضور"
+          variant="success"
+        />
         <StatCard value={`${stats.totalStudents}`} label="إجمالي الطلاب" variant="primary" />
       </div>
 
@@ -167,8 +184,22 @@ export function TeacherReports() {
               <h4 className="font-bold text-foreground">{course.name}</h4>
               <p className="text-xs text-muted-foreground">{course.code}</p>
               <div className="mt-2 flex gap-3">
-                <div className="text-xs text-muted-foreground">متوسط الحضور: --%</div>
-                <div className="text-xs text-muted-foreground">متوسط الدرجات: --%</div>
+                <div className="text-xs text-muted-foreground">
+                  متوسط الحضور:{' '}
+                  <span className="font-bold text-foreground">
+                    {course.averageAttendance !== null && course.averageAttendance !== undefined
+                      ? `${course.averageAttendance}%`
+                      : '—'}
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  متوسط الدرجات:{' '}
+                  <span className="font-bold text-foreground">
+                    {(course.averageGrade ?? course.averageScore) !== null && (course.averageGrade ?? course.averageScore) !== undefined
+                      ? `${course.averageGrade ?? course.averageScore}%`
+                      : '—'}
+                  </span>
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -179,14 +210,14 @@ export function TeacherReports() {
           </div>
         ))}
 
-        {/* Dialog showing details (Placeholder for now since we don't fetch deep details) */}
+        {/* Dialog showing course student breakdown */}
         <Dialog open={!!openCourse} onOpenChange={(v) => { if (!v) setOpenCourse(null); }}>
           <DialogContent className="max-w-3xl">
             <DialogHeader>
               <DialogTitle>تفاصيل مادة: {openCourse?.name}</DialogTitle>
             </DialogHeader>
             <div className="pt-4">
-              <TeacherCourseDetails courseId={openCourse?.id} />
+              <TeacherCourseDetails courseId={openCourse?.id} onSaved={fetchStats} />
             </div>
           </DialogContent>
         </Dialog>
@@ -195,7 +226,7 @@ export function TeacherReports() {
   );
 }
 
-function TeacherCourseDetails({ courseId }: { courseId?: string }) {
+function TeacherCourseDetails({ courseId, onSaved }: { courseId?: string; onSaved?: () => void }) {
   const [details, setDetails] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -215,11 +246,11 @@ function TeacherCourseDetails({ courseId }: { courseId?: string }) {
         const data = await res.json();
         if (data.success) {
           setDetails(data.data);
-          // Initialize updates state
+          // Initialize updates state: only populate manual override if explicitly set
           const initialUpdates: any = {};
           data.data.students.forEach((s: any) => {
              initialUpdates[s.id] = {
-               finalGrade: s.finalGrade || '',
+               finalGrade: s.gradeOverride ?? '',
                attendanceOverride: s.attendanceOverride?.toString() || '0'
              };
           });
@@ -270,9 +301,18 @@ function TeacherCourseDetails({ courseId }: { courseId?: string }) {
 
       const result = await res.json();
       if (result.success) {
-        toast({ title: 'نجاح', description: 'تم حفظ التعديلات بنجاح', variant: 'default' });
+        toast({ title: 'نجاح', description: 'تم حفظ التعديلات وتحديث دفتر الدرجات والمعدل بنجاح', variant: 'default' });
+        if (onSaved) onSaved();
+        // Refresh modal details so computed letter/score reflects saved overrides immediately
+        const refreshRes = await fetch(`${getReportsApiUrl()}/teacher/course/${courseId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const refreshData = await refreshRes.json();
+        if (refreshData.success) {
+          setDetails(refreshData.data);
+        }
       } else {
-        toast({ title: 'خطأ', description: 'فشل حفظ التعديلات', variant: 'destructive' });
+        toast({ title: 'خطأ', description: result.message || 'فشل حفظ التعديلات', variant: 'destructive' });
       }
     } catch (error) {
       console.error(error);
@@ -292,7 +332,14 @@ function TeacherCourseDetails({ courseId }: { courseId?: string }) {
         <div className="bg-muted p-3 rounded-lg flex-1 text-center">
           <span className="text-xs text-muted-foreground block">متوسط الحضور</span>
           <span className="font-bold text-xl">
-            {Math.round(details.students.reduce((acc: any, s: any) => acc + s.attendancePercentage, 0) / (details.students.length || 1))}%
+            {(() => {
+              const valid = details.students
+                .map((s: any) => (s.attendancePercentage !== undefined ? s.attendancePercentage : s.attendance_rate))
+                .filter((v: any) => typeof v === 'number');
+              return valid.length > 0
+                ? `${Math.round(valid.reduce((acc: number, v: number) => acc + v, 0) / valid.length)}%`
+                : '—';
+            })()}
           </span>
         </div>
       </div>
@@ -302,7 +349,8 @@ function TeacherCourseDetails({ courseId }: { courseId?: string }) {
           <thead className="bg-muted sticky top-0 z-10">
             <tr>
               <th className="p-3 text-right">الطالب</th>
-              <th className="p-3 text-center">الدرجة</th>
+              <th className="p-3 text-center">التقدير الحالي</th>
+              <th className="p-3 text-center">تعديل التقدير</th>
               <th className="p-3 text-center">تعديل الحضور (+/-)</th>
               <th className="p-3 text-center">المحاضرات</th>
               <th className="p-3 text-center">النسبة</th>
@@ -310,36 +358,53 @@ function TeacherCourseDetails({ courseId }: { courseId?: string }) {
           </thead>
           <tbody>
             {details.students.length === 0 && (
-              <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">لا يوجد طلاب مسجلين</td></tr>
+              <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">لا يوجد طلاب مسجلين</td></tr>
             )}
             {details.students.map((student: any) => (
               <tr key={student.id} className="border-t hover:bg-muted/50">
                 <td className="p-3">
                   <div className="font-medium">{student.name}</div>
-                  <div className="text-xs text-muted-foreground">{student.studentId}</div>
+                  <div className="text-xs text-muted-foreground">{student.studentId || student.student_id}</div>
+                </td>
+                <td className="p-3 text-center">
+                  <span className="inline-block px-2 py-0.5 rounded-full text-xs font-bold bg-primary/10 text-primary">
+                    {student.letterGrade || student.finalGrade
+                      ? `${student.letterGrade || student.finalGrade}${student.totalScore !== null && student.totalScore !== undefined ? ` (${student.totalScore}%)` : ''}`
+                      : 'قيد الرصد'}
+                  </span>
                 </td>
                 <td className="p-3 text-center">
                   <Input 
-                    value={updates[student.id]?.finalGrade || ''} 
+                    value={updates[student.id]?.finalGrade !== undefined ? updates[student.id]?.finalGrade : (student.gradeOverride || '')} 
                     onChange={(e) => handleUpdateChange(student.id, 'finalGrade', e.target.value)}
-                    className="w-20 text-center mx-auto"
-                    placeholder="الدرجة"
+                    className="w-24 text-center mx-auto text-xs"
+                    placeholder={student.letterGrade ? `تلقائي (${student.letterGrade})` : 'تلقائي'}
                   />
                 </td>
                 <td className="p-3 text-center">
                   <Input 
                     type="number"
-                    value={updates[student.id]?.attendanceOverride || ''} 
+                    value={updates[student.id]?.attendanceOverride !== undefined ? updates[student.id]?.attendanceOverride : (student.attendanceOverride || 0)} 
                     onChange={(e) => handleUpdateChange(student.id, 'attendanceOverride', e.target.value)}
                     className="w-20 text-center mx-auto"
                     placeholder="0"
                   />
                 </td>
-                <td className="p-3 text-center">{student.attendedLectures} / {student.totalLectures}</td>
+                <td className="p-3 text-center">
+                  {student.attendedLectures !== undefined ? student.attendedLectures : (student.attended_count || 0)} / {student.totalLectures !== undefined ? student.totalLectures : (student.total_lectures ?? 0)}
+                </td>
                 <td className="p-3 text-center font-bold">
-                  <span className={`px-2 py-1 rounded-full text-xs ${student.attendancePercentage >= 75 ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'}`}>
-                    {student.attendancePercentage}%
-                  </span>
+                  {(() => {
+                    const pct = student.attendancePercentage !== undefined ? student.attendancePercentage : student.attendance_rate;
+                    if (pct === null || pct === undefined) {
+                      return <span className="text-xs text-muted-foreground">—</span>;
+                    }
+                    return (
+                      <span className={`px-2 py-1 rounded-full text-xs ${pct >= 75 ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'}`}>
+                        {pct}%
+                      </span>
+                    );
+                  })()}
                 </td>
               </tr>
             ))}

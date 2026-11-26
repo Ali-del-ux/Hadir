@@ -61,6 +61,33 @@ router.get('/my-status', authenticate, async (req: any, res) => {
 router.use(authenticate);
 router.use(authorize('admin'));
 
+// GET /api/financials/summary - Admin financial KPIs summary
+router.get('/summary', async (_req, res) => {
+  try {
+    const [rows] = await pool.execute<any[]>(`
+      SELECT
+        COALESCE(SUM(total_tuition), 0) AS totalExpected,
+        COALESCE(SUM(paid_amount), 0) AS totalCollected,
+        COALESCE(SUM(GREATEST(0, total_tuition - paid_amount)), 0) AS totalDebt,
+        COALESCE(SUM(CASE WHEN is_frozen = 1 THEN 1 ELSE 0 END), 0) AS frozenCount
+      FROM student_financials
+    `);
+
+    const r = rows[0] || {};
+    res.json({
+      success: true,
+      data: {
+        totalExpected: Number(r.totalExpected) || 0,
+        totalCollected: Number(r.totalCollected) || 0,
+        totalDebt: Number(r.totalDebt) || 0,
+        frozenCount: Number(r.frozenCount) || 0,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // GET /api/admin/financials - Summary + All records
 router.get('/', async (req, res) => {
   try {

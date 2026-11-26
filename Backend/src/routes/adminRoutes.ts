@@ -69,7 +69,7 @@ router.post('/users', validateRequest(createUserSchema), async (req, res, next) 
     if (!userData.name || !userData.email || !userData.role) {
       return res.status(400).json({ success: false, message: 'Name, email, and role are required' });
     }
-    if (userData.role === 'student' && !userData.student_id) {
+    if (userData.role === 'student' && !(userData.student_id || userData.studentId)) {
       return res.status(400).json({ success: false, message: 'Student ID is required for students' });
     }
 
@@ -84,6 +84,12 @@ router.post('/users', validateRequest(createUserSchema), async (req, res, next) 
     res.status(201).json({ success: true, message: 'User created successfully', data: user });
   } catch (error: any) {
     console.error('Create user error:', error);
+    if (
+      error.message === 'Email or student ID already exists' ||
+      error.message === 'A secure password is required for new users'
+    ) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     next(error);
   }
 });
@@ -102,6 +108,12 @@ router.put('/users/:id', validateRequest(updateUserSchema), async (req, res, nex
     res.json({ success: true, message: 'User updated successfully', data: user });
   } catch (error: any) {
     console.error('Update user error:', error);
+    if (error.message === 'User not found') {
+      return res.status(404).json({ success: false, message: error.message });
+    }
+    if (error.message === 'Email or student ID already exists') {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     next(error);
   }
 });

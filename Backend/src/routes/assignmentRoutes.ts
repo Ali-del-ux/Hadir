@@ -390,6 +390,13 @@ studentRoutes.post('/:id/submit', checkStudentAssignmentAccess, upload.single('f
     });
   } catch (error: any) {
     console.error('Submit assignment error:', error);
+    if (error.status === 403 || error.code === 'ACCOUNT_FROZEN') {
+      return res.status(403).json({
+        success: false,
+        ...(error.code ? { code: error.code } : {}),
+        message: error.message,
+      });
+    }
     next(error);
   }
 });

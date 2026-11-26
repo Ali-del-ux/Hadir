@@ -58,12 +58,17 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
             });
           }
 
-          // 2. Account freeze check (Only for students on non-financial routes)
+          // 2. Account freeze check (Students can view read-only academic & financial records,
+          //    but cannot perform attendance check-in or assignment submission actions)
           if (u.is_frozen && decoded.role === 'student') {
-            const isExemptRoute = req.originalUrl.includes('/financials/my-status') ||
-                                  req.originalUrl.includes('/auth/me') ||
-                                  req.originalUrl.includes('/auth/logout');
-            if (!isExemptRoute) {
+            const pathToCheck = (req.originalUrl || req.path || '').split('?')[0];
+            const isWriteMethod = req.method !== 'GET' && req.method !== 'HEAD';
+            const isBlockedFrozenAction =
+              isWriteMethod &&
+              (pathToCheck.startsWith('/api/attendance/student') ||
+                pathToCheck.startsWith('/api/assignments/student'));
+
+            if (isBlockedFrozenAction) {
               return res.status(403).json({
                 success: false,
                 code: 'ACCOUNT_FROZEN',

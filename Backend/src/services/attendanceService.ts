@@ -1,10 +1,33 @@
 import { pool } from '../config/database';
 import crypto from 'crypto';
 
+export const QR_STEP_SECONDS = 20;
+
+export function computeAttendanceTOTP(qrSecret: string, sessionId: string, timeWindow: number): string {
+  return crypto
+    .createHmac('sha256', qrSecret)
+    .update(`${sessionId}:${timeWindow}`)
+    .digest('hex')
+    .slice(0, 8)
+    .toUpperCase();
+}
+
+export function buildLiveQrPayload(sessionId: string, qrSecret: string): { live_qr: string; expires_in: number } {
+  const now = Math.floor(Date.now() / 1000);
+  const currentWindow = Math.floor(now / QR_STEP_SECONDS);
+  const token = computeAttendanceTOTP(qrSecret, sessionId, currentWindow);
+  const expires_in = QR_STEP_SECONDS - (now % QR_STEP_SECONDS);
+  return {
+    live_qr: `HADIR:${sessionId}:${currentWindow}:${token}`,
+    expires_in,
+  };
+}
+
 export interface CreateAttendanceSessionRequest {
   course_id: string;
   date: string; // YYYY-MM-DD
   time: string; // HH:MM
+  room?: string;
 }
 
 export interface AttendanceSession {
@@ -14,7 +37,10 @@ export interface AttendanceSession {
   course_code: string;
   date: string;
   time: string;
+  room: string | null;
   qr_code: string;
+  live_qr?: string;
+  expires_in?: number;
   status: 'active' | 'closed';
   created_by: string;
   created_at: string;
@@ -22,21 +48,20 @@ export interface AttendanceSession {
   attendees_count: number;
 }
 
-// Generate unique QR code
-const generateQRCode = (): string => {
+const generateStaticPlaceholderCode = (): string => {
   const randomString = crypto.randomBytes(4).toString('hex').toUpperCase();
   return `ATT-${randomString}`;
 };
 
-// Create attendance session
+// Create attendance session (with immediate 32-byte qr_secret)
 export const createAttendanceSession = async (
-  teacherId: string,
-  sessionData: CreateAttendanceSessionRequest
-): Promise<AttendanceSession> => {
+  actorId: string,
+  sessionData: CreateAttendanceSessionRequest,
+  actorRole?: string
+): Promise<AttendanceSession & { live_qr?: string }> => {
   try {
-    // Validate course exists and teacher is assigned to it
     const [course] = await pool.execute<any[]>(
-      `SELECT c.id, c.code, c.name, c.teacher_id
+      `SELECT c.id, c.code, c.name, c.teacher_id, c.room
        FROM courses c
        WHERE c.id = ? AND c.deleted_at IS NULL`,
       [sessionData.course_id]
@@ -46,12 +71,10 @@ export const createAttendanceSession = async (
       throw new Error('Course not found');
     }
 
-    // Check if teacher is assigned to this course
-    if (course[0].teacher_id !== teacherId) {
+    if (actorRole !== 'admin' && course[0].teacher_id !== actorId) {
       throw new Error('You are not assigned to this course');
     }
 
-    // Check if there's already an active session for this course today
     const [existingSession] = await pool.execute<any[]>(
       `SELECT id FROM attendance_sessions
        WHERE course_id = ? AND date = ? AND status = 'active'`,
@@ -62,41 +85,46 @@ export const createAttendanceSession = async (
       throw new Error('An active session already exists for this course today');
     }
 
-    // Generate unique QR code
-    let qrCode = generateQRCode();
+    let qrCode = generateStaticPlaceholderCode();
     let attempts = 0;
-    
-    // Ensure QR code is unique
+
     while (attempts < 10) {
       const [existing] = await pool.execute<any[]>(
         `SELECT id FROM attendance_sessions WHERE qr_code = ? AND status = 'active'`,
         [qrCode]
       );
-      
-      if (existing.length === 0) {
-        break;
-      }
-      
-      qrCode = generateQRCode();
+      if (existing.length === 0) break;
+      qrCode = generateStaticPlaceholderCode();
       attempts++;
     }
 
     const sessionId = `session_${Date.now()}`;
+    const qrSecret = crypto.randomBytes(32).toString('hex');
+    const room = sessionData.room || course[0].room || null;
 
     await pool.execute(
-      `INSERT INTO attendance_sessions (id, course_id, date, time, qr_code, status, created_by)
-       VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+      `INSERT INTO attendance_sessions (id, course_id, date, time, room, qr_code, qr_secret, status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
       [
         sessionId,
         sessionData.course_id,
         sessionData.date,
         sessionData.time,
+        room,
         qrCode,
-        teacherId,
+        qrSecret,
+        actorId,
       ]
     );
 
-    return (await getAttendanceSessionById(sessionId))!;
+    const created = (await getAttendanceSessionById(sessionId))!;
+    const { live_qr, expires_in } = buildLiveQrPayload(sessionId, qrSecret);
+
+    return {
+      ...created,
+      live_qr,
+      expires_in,
+    };
   } catch (error: any) {
     console.error('Error creating attendance session:', error);
     throw error;
@@ -114,7 +142,9 @@ export const getAttendanceSessionById = async (sessionId: string): Promise<Atten
         c.name AS course_name,
         as2.date,
         as2.time,
+        COALESCE(as2.room, c.room) AS room,
         as2.qr_code,
+        as2.qr_secret,
         as2.status,
         as2.created_by,
         u.name AS created_by_name,
@@ -130,11 +160,19 @@ export const getAttendanceSessionById = async (sessionId: string): Promise<Atten
       [sessionId]
     );
 
-    if (rows.length === 0) {
-      return null;
-    }
+    if (rows.length === 0) return null;
 
     const row = rows[0];
+    let liveInfo: { live_qr?: string; expires_in?: number } = {};
+    if (row.status === 'active') {
+      let secret = row.qr_secret;
+      if (!secret) {
+        secret = crypto.randomBytes(32).toString('hex');
+        await pool.execute(`UPDATE attendance_sessions SET qr_secret = ? WHERE id = ?`, [secret, row.id]);
+      }
+      liveInfo = buildLiveQrPayload(row.id, secret);
+    }
+
     return {
       id: row.id,
       course_id: row.course_id,
@@ -142,7 +180,9 @@ export const getAttendanceSessionById = async (sessionId: string): Promise<Atten
       course_code: row.course_code,
       date: row.date,
       time: row.time,
+      room: row.room || null,
       qr_code: row.qr_code,
+      ...liveInfo,
       status: row.status,
       created_by: row.created_by,
       created_at: row.created_at,
@@ -166,6 +206,7 @@ export const getAttendanceSessionByQRCode = async (qrCode: string): Promise<Atte
         c.name AS course_name,
         as2.date,
         as2.time,
+        COALESCE(as2.room, c.room) AS room,
         as2.qr_code,
         as2.status,
         as2.created_by,
@@ -180,9 +221,7 @@ export const getAttendanceSessionByQRCode = async (qrCode: string): Promise<Atte
       [qrCode]
     );
 
-    if (rows.length === 0) {
-      return null;
-    }
+    if (rows.length === 0) return null;
 
     const row = rows[0];
     return {
@@ -192,6 +231,7 @@ export const getAttendanceSessionByQRCode = async (qrCode: string): Promise<Atte
       course_code: row.course_code,
       date: row.date,
       time: row.time,
+      room: row.room || null,
       qr_code: row.qr_code,
       status: row.status,
       created_by: row.created_by,
@@ -205,13 +245,18 @@ export const getAttendanceSessionByQRCode = async (qrCode: string): Promise<Atte
   }
 };
 
-// Refresh QR code for a session
-export const refreshQRCode = async (sessionId: string, teacherId: string): Promise<string> => {
+// Refresh/rotate QR secret and return fresh TOTP payload
+export const refreshQRCode = async (
+  sessionId: string,
+  actorId: string,
+  actorRole?: string
+): Promise<string> => {
   try {
-    // Verify session exists and belongs to teacher
     const [session] = await pool.execute<any[]>(
-      `SELECT id, created_by FROM attendance_sessions 
-       WHERE id = ? AND status = 'active'`,
+      `SELECT as2.id, as2.created_by, c.teacher_id
+       FROM attendance_sessions as2
+       JOIN courses c ON as2.course_id = c.id
+       WHERE as2.id = ? AND as2.status = 'active'`,
       [sessionId]
     );
 
@@ -219,36 +264,23 @@ export const refreshQRCode = async (sessionId: string, teacherId: string): Promi
       throw new Error('Session not found or already closed');
     }
 
-    if (session[0].created_by !== teacherId) {
+    if (
+      actorRole !== 'admin' &&
+      session[0].teacher_id !== actorId &&
+      session[0].created_by !== actorId
+    ) {
       throw new Error('You are not authorized to refresh this session');
     }
 
-    // Generate new QR code
-    let qrCode = generateQRCode();
-    let attempts = 0;
-    
-    while (attempts < 10) {
-      const [existing] = await pool.execute<any[]>(
-        `SELECT id FROM attendance_sessions 
-         WHERE qr_code = ? AND id != ? AND status = 'active'`,
-        [qrCode, sessionId]
-      );
-      
-      if (existing.length === 0) {
-        break;
-      }
-      
-      qrCode = generateQRCode();
-      attempts++;
-    }
-
-    // Update QR code
+    const newSecret = crypto.randomBytes(32).toString('hex');
     await pool.execute(
-      `UPDATE attendance_sessions SET qr_code = ? WHERE id = ?`,
-      [qrCode, sessionId]
+      `UPDATE attendance_sessions SET qr_secret = ? WHERE id = ?`,
+      [newSecret, sessionId]
     );
 
-    return qrCode;
+    const currentWindow = Math.floor(Date.now() / 1000 / QR_STEP_SECONDS);
+    const token = computeAttendanceTOTP(newSecret, sessionId, currentWindow);
+    return `HADIR:${sessionId}:${currentWindow}:${token}`;
   } catch (error: any) {
     console.error('Error refreshing QR code:', error);
     throw error;
@@ -256,12 +288,17 @@ export const refreshQRCode = async (sessionId: string, teacherId: string): Promi
 };
 
 // Close attendance session
-export const closeAttendanceSession = async (sessionId: string, teacherId: string) => {
+export const closeAttendanceSession = async (
+  sessionId: string,
+  actorId: string,
+  actorRole?: string
+) => {
   try {
-    // Verify session exists and belongs to teacher
     const [session] = await pool.execute<any[]>(
-      `SELECT id, created_by FROM attendance_sessions 
-       WHERE id = ? AND status = 'active'`,
+      `SELECT as2.id, as2.created_by, c.teacher_id
+       FROM attendance_sessions as2
+       JOIN courses c ON as2.course_id = c.id
+       WHERE as2.id = ? AND as2.status = 'active'`,
       [sessionId]
     );
 
@@ -269,7 +306,11 @@ export const closeAttendanceSession = async (sessionId: string, teacherId: strin
       throw new Error('Session not found or already closed');
     }
 
-    if (session[0].created_by !== teacherId) {
+    if (
+      actorRole !== 'admin' &&
+      session[0].teacher_id !== actorId &&
+      session[0].created_by !== actorId
+    ) {
       throw new Error('You are not authorized to close this session');
     }
 
@@ -287,42 +328,78 @@ export const closeAttendanceSession = async (sessionId: string, teacherId: strin
   }
 };
 
-// Get active sessions for a teacher
-export const getTeacherActiveSessions = async (teacherId: string) => {
+// Get active sessions for a teacher (matching courses.teacher_id, or all active for admin)
+export const getTeacherActiveSessions = async (actorId: string, actorRole?: string) => {
   try {
-    const [rows] = await pool.execute<any[]>(
-      `SELECT 
-        as2.id,
-        as2.course_id,
-        c.code AS course_code,
-        c.name AS course_name,
-        as2.date,
-        as2.time,
-        as2.qr_code,
-        as2.status,
-        as2.created_at,
-        COUNT(DISTINCT ar.student_id) AS attendees_count
-       FROM attendance_sessions as2
-       JOIN courses c ON as2.course_id = c.id
-       LEFT JOIN attendance_records ar ON as2.id = ar.session_id
-       WHERE as2.created_by = ? AND as2.status = 'active'
-       GROUP BY as2.id
-       ORDER BY as2.created_at DESC`,
-      [teacherId]
-    );
+    const query =
+      actorRole === 'admin'
+        ? `SELECT 
+            as2.id,
+            as2.course_id,
+            c.code AS course_code,
+            c.name AS course_name,
+            as2.date,
+            as2.time,
+            COALESCE(as2.room, c.room) AS room,
+            as2.qr_code,
+            as2.qr_secret,
+            as2.status,
+            as2.created_at,
+            COUNT(DISTINCT ar.student_id) AS attendees_count
+           FROM attendance_sessions as2
+           JOIN courses c ON as2.course_id = c.id
+           LEFT JOIN attendance_records ar ON as2.id = ar.session_id
+           WHERE as2.status = 'active' AND c.deleted_at IS NULL
+           GROUP BY as2.id
+           ORDER BY as2.created_at DESC`
+        : `SELECT 
+            as2.id,
+            as2.course_id,
+            c.code AS course_code,
+            c.name AS course_name,
+            as2.date,
+            as2.time,
+            COALESCE(as2.room, c.room) AS room,
+            as2.qr_code,
+            as2.qr_secret,
+            as2.status,
+            as2.created_at,
+            COUNT(DISTINCT ar.student_id) AS attendees_count
+           FROM attendance_sessions as2
+           JOIN courses c ON as2.course_id = c.id
+           LEFT JOIN attendance_records ar ON as2.id = ar.session_id
+           WHERE c.teacher_id = ? AND as2.status = 'active' AND c.deleted_at IS NULL
+           GROUP BY as2.id
+           ORDER BY as2.created_at DESC`;
 
-    return rows.map((row: any) => ({
-      id: row.id,
-      course_id: row.course_id,
-      course_name: row.course_name,
-      course_code: row.course_code,
-      date: row.date,
-      time: row.time,
-      qr_code: row.qr_code,
-      status: row.status,
-      created_at: row.created_at,
-      attendees_count: parseInt(row.attendees_count) || 0,
-    }));
+    const params = actorRole === 'admin' ? [] : [actorId];
+    const [rows] = await pool.execute<any[]>(query, params);
+
+    const mapped = [];
+    for (const row of rows) {
+      let secret = row.qr_secret;
+      if (!secret) {
+        secret = crypto.randomBytes(32).toString('hex');
+        await pool.execute(`UPDATE attendance_sessions SET qr_secret = ? WHERE id = ?`, [secret, row.id]);
+      }
+      const { live_qr, expires_in } = buildLiveQrPayload(row.id, secret);
+      mapped.push({
+        id: row.id,
+        course_id: row.course_id,
+        course_name: row.course_name,
+        course_code: row.course_code,
+        date: row.date,
+        time: row.time,
+        room: row.room || null,
+        qr_code: row.qr_code,
+        live_qr,
+        expires_in,
+        status: row.status,
+        created_at: row.created_at,
+        attendees_count: parseInt(row.attendees_count) || 0,
+      });
+    }
+    return mapped;
   } catch (error) {
     console.error('Error getting teacher sessions:', error);
     throw error;
@@ -330,45 +407,85 @@ export const getTeacherActiveSessions = async (teacherId: string) => {
 };
 
 // Get all sessions for a specific course
-export const getCourseSessions = async (teacherId: string, courseId: string) => {
+export const getCourseSessions = async (actorId: string, courseId: string, actorRole?: string) => {
   try {
-    const [rows] = await pool.execute<any[]>(
-      `SELECT 
-        as2.id,
-        as2.course_id,
-        c.code AS course_code,
-        c.name AS course_name,
-        as2.date,
-        as2.time,
-        as2.qr_code,
-        as2.status,
-        as2.created_by,
-        as2.created_at,
-        as2.closed_at,
-        COUNT(DISTINCT ar.student_id) AS attendees_count
-       FROM attendance_sessions as2
-       JOIN courses c ON as2.course_id = c.id
-       LEFT JOIN attendance_records ar ON as2.id = ar.session_id
-       WHERE as2.created_by = ? AND as2.course_id = ?
-       GROUP BY as2.id
-       ORDER BY as2.created_at DESC`,
-      [teacherId, courseId]
-    );
+    const query =
+      actorRole === 'admin'
+        ? `SELECT 
+            as2.id,
+            as2.course_id,
+            c.code AS course_code,
+            c.name AS course_name,
+            as2.date,
+            as2.time,
+            COALESCE(as2.room, c.room) AS room,
+            as2.qr_code,
+            as2.qr_secret,
+            as2.status,
+            as2.created_by,
+            as2.created_at,
+            as2.closed_at,
+            COUNT(DISTINCT ar.student_id) AS attendees_count
+           FROM attendance_sessions as2
+           JOIN courses c ON as2.course_id = c.id
+           LEFT JOIN attendance_records ar ON as2.id = ar.session_id
+           WHERE as2.course_id = ?
+           GROUP BY as2.id
+           ORDER BY as2.created_at DESC`
+        : `SELECT 
+            as2.id,
+            as2.course_id,
+            c.code AS course_code,
+            c.name AS course_name,
+            as2.date,
+            as2.time,
+            COALESCE(as2.room, c.room) AS room,
+            as2.qr_code,
+            as2.qr_secret,
+            as2.status,
+            as2.created_by,
+            as2.created_at,
+            as2.closed_at,
+            COUNT(DISTINCT ar.student_id) AS attendees_count
+           FROM attendance_sessions as2
+           JOIN courses c ON as2.course_id = c.id
+           LEFT JOIN attendance_records ar ON as2.id = ar.session_id
+           WHERE c.teacher_id = ? AND as2.course_id = ?
+           GROUP BY as2.id
+           ORDER BY as2.created_at DESC`;
 
-    return rows.map((row: any) => ({
-      id: row.id,
-      course_id: row.course_id,
-      course_name: row.course_name,
-      course_code: row.course_code,
-      date: row.date,
-      time: row.time,
-      qr_code: row.qr_code,
-      status: row.status,
-      created_by: row.created_by,
-      created_at: row.created_at,
-      closed_at: row.closed_at,
-      attendees_count: parseInt(row.attendees_count) || 0,
-    }));
+    const params = actorRole === 'admin' ? [courseId] : [actorId, courseId];
+    const [rows] = await pool.execute<any[]>(query, params);
+
+    const mapped = [];
+    for (const row of rows) {
+      let liveInfo: { live_qr?: string; expires_in?: number } = {};
+      if (row.status === 'active') {
+        let secret = row.qr_secret;
+        if (!secret) {
+          secret = crypto.randomBytes(32).toString('hex');
+          await pool.execute(`UPDATE attendance_sessions SET qr_secret = ? WHERE id = ?`, [secret, row.id]);
+        }
+        liveInfo = buildLiveQrPayload(row.id, secret);
+      }
+      mapped.push({
+        id: row.id,
+        course_id: row.course_id,
+        course_name: row.course_name,
+        course_code: row.course_code,
+        date: row.date,
+        time: row.time,
+        room: row.room || null,
+        qr_code: row.qr_code,
+        ...liveInfo,
+        status: row.status,
+        created_by: row.created_by,
+        created_at: row.created_at,
+        closed_at: row.closed_at,
+        attendees_count: parseInt(row.attendees_count) || 0,
+      });
+    }
+    return mapped;
   } catch (error) {
     console.error('Error getting course sessions:', error);
     throw error;
@@ -410,15 +527,18 @@ export const getStudentActiveSessions = async (studentId: string) => {
         as2.course_id,
         c.code AS course_code,
         c.name AS course_name,
+        u.name AS teacher_name,
         as2.date,
         as2.time,
+        COALESCE(as2.room, c.room) AS room,
         as2.qr_code,
         as2.status,
         as2.created_at
        FROM attendance_sessions as2
        JOIN courses c ON as2.course_id = c.id
+       LEFT JOIN users u ON c.teacher_id = u.id
        JOIN enrollments e ON e.course_id = c.id
-       WHERE e.student_id = ? AND as2.status = 'active' AND e.status = 'active'
+       WHERE e.student_id = ? AND as2.status = 'active' AND e.status = 'active' AND c.deleted_at IS NULL
        ORDER BY as2.created_at DESC`,
       [studentId]
     );
@@ -429,11 +549,12 @@ export const getStudentActiveSessions = async (studentId: string) => {
   }
 };
 
-
 /**
  * توليد رمز الـ QR الديناميكي المتغير كل 20 ثانية (TOTP)
  */
-export const getLiveDynamicQR = async (sessionId: string): Promise<{ qrCode: string; expiresIn: number; attendeesCount: number } | null> => {
+export const getLiveDynamicQR = async (
+  sessionId: string
+): Promise<{ qrCode: string; expiresIn: number; attendeesCount: number } | null> => {
   const [rows] = await pool.execute<any[]>(
     `SELECT as2.id, as2.qr_code, as2.qr_secret, as2.status, COUNT(DISTINCT ar.student_id) as attendees_count
      FROM attendance_sessions as2
@@ -450,15 +571,14 @@ export const getLiveDynamicQR = async (sessionId: string): Promise<{ qrCode: str
     await pool.execute(`UPDATE attendance_sessions SET qr_secret = ? WHERE id = ?`, [secret, sessionId]);
   }
 
-  const interval = 20; // 20 seconds
   const now = Math.floor(Date.now() / 1000);
-  const currentWindow = Math.floor(now / interval);
-  const token = crypto.createHmac('sha256', secret).update(String(currentWindow)).digest('hex').substring(0, 8).toUpperCase();
-  const expiresIn = interval - (now % interval);
+  const currentWindow = Math.floor(now / QR_STEP_SECONDS);
+  const token = computeAttendanceTOTP(secret, sessionId, currentWindow);
+  const expiresIn = QR_STEP_SECONDS - (now % QR_STEP_SECONDS);
 
   return {
     qrCode: `HADIR:${sessionId}:${currentWindow}:${token}`,
     expiresIn,
-    attendeesCount: parseInt(row.attendees_count) || 0
+    attendeesCount: parseInt(row.attendees_count) || 0,
   };
 };

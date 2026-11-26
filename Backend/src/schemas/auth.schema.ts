@@ -7,9 +7,21 @@ const safeString = z.string().regex(SAFE_STRING_REGEX, SAFE_STRING_MSG);
 
 export const loginSchema = z.object({
   body: z.object({
-    identifier: safeString.min(1, 'Identifier is required').max(30, 'Identifier is too long'),
+    identifier: safeString.min(1, 'Identifier is required').max(120, 'Identifier is too long'),
     password: z.string().min(1, 'Password is required'),
+    totp_code: z.string().trim().min(6).max(10).optional(),
   }).strict(),
+});
+
+export const verify2FALoginSchema = z.object({
+  body: z.object({
+    temp_token: z.string().min(1, 'Temporary 2FA token is required'),
+    totp_code: z.string().trim().min(6).max(10).optional(),
+    token: z.string().trim().min(6).max(10).optional(),
+    code: z.string().trim().min(6).max(10).optional(),
+  }).strict().refine((data) => Boolean(data.totp_code || data.token || data.code), {
+    message: '2FA verification code is required',
+  }),
 });
 
 export const refreshSchema = z.object({
@@ -33,9 +45,9 @@ export const changePasswordSchema = z.object({
 
 export const updateProfileSchema = z.object({
   body: z.object({
-    name: safeString.min(2, 'Name is required').max(30, 'Name is too long').optional(),
-    email: safeString.email('Invalid email').max(100, 'Email is too long').optional(),
-    department: safeString.max(30, 'Department name is too long').optional(),
-    avatar: safeString.optional(),
+    name: safeString.min(2, 'Name is required').max(100, 'Name is too long').optional(),
+    email: safeString.email('Invalid email').max(120, 'Email is too long').optional(),
+    department: safeString.max(100, 'Department name is too long').optional(),
+    avatar: safeString.max(255).optional(),
   }).strict(),
 });

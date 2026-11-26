@@ -12,11 +12,12 @@ const { performance } = require('perf_hooks');
 
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = `http://localhost:${process.env.PORT || 3000}`;
 const DB_CONFIG = {
   host: process.env.DB_HOST || 'localhost',
+  port: Number(process.env.DB_PORT) || 3306,
   user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '12345678',
+  password: process.env.DB_PASSWORD !== undefined ? process.env.DB_PASSWORD : '',
   database: process.env.DB_NAME || 'eduflow_db',
   multipleStatements: true
 };

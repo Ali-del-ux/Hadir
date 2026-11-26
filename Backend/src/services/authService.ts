@@ -2,8 +2,9 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { pool } from '../config/database';
-import { JWT_SECRET, JWT_EXPIRES_IN, JWT_REFRESH_EXPIRES_IN, JWT_ISSUER, JWT_AUDIENCE } from '../config/jwt';
+import { JWT_SECRET, JWT_EXPIRES_IN, JWT_ISSUER, JWT_AUDIENCE } from '../config/jwt';
 import { LoginRequest, LoginResponse, User, UserWithPassword, JwtPayload } from '../types';
+import { verifyTOTP } from '../utils/totp';
 
 // ─────────────────────────────────────────────────────────────
 //  Password utilities
@@ -20,12 +21,24 @@ export const comparePassword = async (plain: string, hashed: string): Promise<bo
 //  JWT
 // ─────────────────────────────────────────────────────────────
 export const generateToken = (payload: Pick<JwtPayload, 'sub' | 'role' | 'tokenVersion'>): string => {
-  const options: SignOptions = { 
+  const options: SignOptions = {
     expiresIn: JWT_EXPIRES_IN as SignOptions['expiresIn'],
     issuer: JWT_ISSUER,
-    audience: JWT_AUDIENCE
+    audience: JWT_AUDIENCE,
   };
   return jwt.sign(payload, JWT_SECRET, options);
+};
+
+export const generate2FATempToken = (payload: Pick<JwtPayload, 'sub' | 'role' | 'tokenVersion'>): string => {
+  return jwt.sign(
+    { ...payload, purpose: '2fa_challenge' },
+    JWT_SECRET,
+    {
+      expiresIn: '5m',
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    }
+  );
 };
 
 export const generateOpaqueToken = (): string => {
@@ -38,12 +51,13 @@ export const hashToken = (token: string): string => {
 
 // ─────────────────────────────────────────────────────────────
 //  Find user
-//  Accepts: email (IDnumber@example.com), student_id, teacher_code, or users.id
+//  Accepts: email, student_id, teacher_code, or users.id
 // ─────────────────────────────────────────────────────────────
 export const findUserByIdentifier = async (identifier: string): Promise<UserWithPassword | null> => {
   const [rows] = await pool.execute<any[]>(
     `SELECT id, name, email, password_hash, role,
-            student_id, teacher_code, department, avatar, is_active, token_version
+            student_id, teacher_code, department, academic_year, avatar, is_active,
+            is_frozen, freeze_reason, two_factor_enabled, two_factor_secret, token_version
      FROM users
      WHERE (
        email        = ? OR
@@ -58,37 +72,77 @@ export const findUserByIdentifier = async (identifier: string): Promise<UserWith
   if (!rows.length) return null;
   const u = rows[0];
   return {
-    id:           u.id,
-    name:         u.name,
-    email:        u.email,
-    password_hash: u.password_hash,
-    role:         u.role,
-    student_id:   u.student_id,
-    teacher_code: u.teacher_code,
-    department:   u.department,
-    avatar:       u.avatar,
-    is_active:    u.is_active,
-    token_version: u.token_version || 1,
+    id:                 u.id,
+    name:               u.name,
+    email:              u.email,
+    password_hash:      u.password_hash,
+    role:               u.role,
+    student_id:         u.student_id,
+    teacher_code:       u.teacher_code,
+    department:         u.department,
+    academic_year:      u.academic_year || null,
+    avatar:             u.avatar,
+    is_active:          Boolean(u.is_active),
+    is_frozen:          Boolean(u.is_frozen),
+    freeze_reason:      u.freeze_reason || null,
+    two_factor_enabled: Boolean(u.two_factor_enabled),
+    two_factor_secret:  u.two_factor_secret || null,
+    token_version:      u.token_version || 1,
   };
 };
 
 // ─────────────────────────────────────────────────────────────
-//  Find admin by username
+//  Find admin by username (supports 'admin' and 'admin@hadir.edu')
 // ─────────────────────────────────────────────────────────────
-export const findAdminByUsername = async (username: string): Promise<any | null> => {
+export const findAdminByUsername = async (identifier: string): Promise<any | null> => {
+  const normalized = identifier === 'admin@hadir.edu' ? 'admin' : identifier;
   const [rows] = await pool.execute<any[]>(
-    `SELECT * FROM admin_accounts WHERE username = ? AND is_active = 1 LIMIT 1`,
-    [username]
+    `SELECT * FROM admin_accounts WHERE (username = ? OR username = ?) AND is_active = 1 LIMIT 1`,
+    [identifier, normalized]
   );
   return rows.length ? rows[0] : null;
 };
+
+async function issueUserSessionTokens(userRow: UserWithPassword): Promise<LoginResponse> {
+  const user: User = {
+    id:                 userRow.id,
+    name:               userRow.name,
+    email:              userRow.email,
+    role:               userRow.role,
+    student_id:         userRow.student_id ?? null,
+    teacher_code:       userRow.teacher_code ?? null,
+    department:         userRow.department ?? null,
+    academic_year:      userRow.academic_year ?? null,
+    avatar:             userRow.avatar ?? null,
+    is_frozen:          Boolean(userRow.is_frozen),
+    freeze_reason:      userRow.freeze_reason ?? null,
+    two_factor_enabled: Boolean(userRow.two_factor_enabled),
+  };
+
+  const token = generateToken({
+    sub: user.id,
+    role: user.role,
+    tokenVersion: userRow.token_version || 1,
+  });
+  const refreshToken = generateOpaqueToken();
+  const tokenHash = hashToken(refreshToken);
+  const familyId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  await pool.execute(
+    'INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at) VALUES (?, ?, ?, ?)',
+    [user.id, tokenHash, familyId, expiresAt]
+  );
+
+  return { success: true, message: 'تم تسجيل الدخول بنجاح.', token, refreshToken, user };
+}
 
 // ─────────────────────────────────────────────────────────────
 //  Login
 // ─────────────────────────────────────────────────────────────
 export const login = async (loginData: LoginRequest): Promise<LoginResponse> => {
   try {
-    const { identifier, password } = loginData;
+    const { identifier, password, totp_code } = loginData;
 
     // ── 1. Try admin table first ──────────────────────────────
     const admin = await findAdminByUsername(identifier);
@@ -97,20 +151,26 @@ export const login = async (loginData: LoginRequest): Promise<LoginResponse> => 
       if (!ok) return { success: false, message: 'بيانات الدخول غير صحيحة.', error: 'INVALID_CREDENTIALS' };
 
       const user: User = {
-        id:         `admin_${admin.id}`,
-        name:       'مدير النظام',
-        email:      admin.username,
-        role:       'admin',
-        department: null,
-        avatar:     null,
+        id:                 `admin_${admin.id}`,
+        name:               'مدير النظام',
+        email:              admin.username === 'admin' ? 'admin@hadir.edu' : admin.username,
+        role:               'admin',
+        student_id:         null,
+        department:         null,
+        avatar:             null,
+        is_frozen:          false,
+        freeze_reason:      null,
+        two_factor_enabled: false,
       };
       const token = generateToken({ sub: user.id, role: user.role, tokenVersion: admin.token_version || 1 });
       const refreshToken = generateOpaqueToken();
       const tokenHash = hashToken(refreshToken);
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
+      const familyId = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
       await pool.execute(
-        'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)',
-        [user.id, tokenHash, expiresAt]
+        'INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at) VALUES (?, ?, ?, ?)',
+        [user.id, tokenHash, familyId, expiresAt]
       );
       return { success: true, message: 'تم تسجيل الدخول بنجاح.', token, refreshToken, user };
     }
@@ -127,33 +187,35 @@ export const login = async (loginData: LoginRequest): Promise<LoginResponse> => 
 
     // Check password
     const passwordOk = await comparePassword(password, userRow.password_hash);
-
     if (!passwordOk) {
       return { success: false, message: 'بيانات الدخول غير صحيحة.', error: 'INVALID_CREDENTIALS' };
     }
 
-    const user: User = {
-      id:           userRow.id,
-      name:         userRow.name,
-      email:        userRow.email,
-      role:         userRow.role,
-      student_id:   userRow.student_id,
-      teacher_code: userRow.teacher_code,
-      department:   userRow.department,
-      avatar:       userRow.avatar,
-    };
+    // ── 3. Enforce RFC 6238 TOTP 2FA if enabled ───────────────
+    if (userRow.two_factor_enabled && userRow.two_factor_secret) {
+      if (totp_code) {
+        const totpOk = verifyTOTP(userRow.two_factor_secret, totp_code);
+        if (!totpOk) {
+          return { success: false, message: 'رمز التحقق الثنائي (2FA) غير صحيح.', error: 'INVALID_2FA_CODE' };
+        }
+        return await issueUserSessionTokens(userRow);
+      }
 
-    const token = generateToken({ sub: user.id, role: user.role, tokenVersion: userRow.token_version || 1 });
-    const refreshToken = generateOpaqueToken();
-    const tokenHash = hashToken(refreshToken);
-    const familyId = require('crypto').randomUUID();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
-    await pool.execute(
-      'INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at) VALUES (?, ?, ?, ?)',
-      [user.id, tokenHash, familyId, expiresAt]
-    );
-    return { success: true, message: 'تم تسجيل الدخول بنجاح.', token, refreshToken, user };
+      const tempToken = generate2FATempToken({
+        sub: userRow.id,
+        role: userRow.role,
+        tokenVersion: userRow.token_version || 1,
+      });
 
+      return {
+        success: true,
+        requires_2fa: true,
+        temp_token: tempToken,
+        message: 'يرجى إدخال رمز التحقق الثنائي (2FA) لإكمال تسجيل الدخول.',
+      };
+    }
+
+    return await issueUserSessionTokens(userRow);
   } catch (err: any) {
     console.error('LOGIN ERROR:', err);
     return { success: false, message: 'حدث خطأ داخلي أثناء تسجيل الدخول.', error: 'INTERNAL_ERROR' };
@@ -161,26 +223,88 @@ export const login = async (loginData: LoginRequest): Promise<LoginResponse> => 
 };
 
 // ─────────────────────────────────────────────────────────────
+//  Verify 2FA Challenge & Issue Session Tokens
+// ─────────────────────────────────────────────────────────────
+export const verify2FALogin = async (tempToken: string, code: string): Promise<LoginResponse> => {
+  try {
+    const decoded = jwt.verify(tempToken, JWT_SECRET, {
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    }) as JwtPayload;
+
+    if (decoded.purpose !== '2fa_challenge' || !decoded.sub) {
+      return { success: false, message: 'رمز المصادقة المؤقت غير صالح.', error: 'INVALID_2FA_TOKEN' };
+    }
+
+    const userRow = await findUserByIdentifier(decoded.sub);
+    if (!userRow || !userRow.is_active) {
+      return { success: false, message: 'المستخدم غير موجود أو معطّل.', error: 'USER_NOT_FOUND' };
+    }
+
+    if (decoded.tokenVersion !== undefined && userRow.token_version !== decoded.tokenVersion) {
+      return { success: false, message: 'تم إلغاء الجلسة، يرجى إعادة المحاولة.', error: 'SESSION_REVOKED' };
+    }
+
+    if (!userRow.two_factor_enabled || !userRow.two_factor_secret) {
+      return { success: false, message: 'المصادقة الثنائية غير مفعلة لهذا الحساب.', error: '2FA_NOT_ENABLED' };
+    }
+
+    const isValid = verifyTOTP(userRow.two_factor_secret, code);
+    if (!isValid) {
+      return { success: false, message: 'رمز التحقق الثنائي (2FA) غير صحيح أو منتهي الصلاحية.', error: 'INVALID_2FA_CODE' };
+    }
+
+    return await issueUserSessionTokens(userRow);
+  } catch (err: any) {
+    return { success: false, message: 'انتهت صلاحية جلسة التحقق الثنائي، يرجى تسجيل الدخول مجدداً.', error: 'INVALID_2FA_TOKEN' };
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
 //  Get current user (by JWT userId)
 // ─────────────────────────────────────────────────────────────
 export const getCurrentUser = async (userId: string): Promise<User | null> => {
-  // Admin
   if (userId.startsWith('admin_')) {
     const dbId = userId.replace('admin_', '');
     const [rows] = await pool.execute<any[]>(
       'SELECT * FROM admin_accounts WHERE id = ? AND is_active = 1', [dbId]
     );
     if (!rows.length) return null;
-    return { id: userId, name: 'مدير النظام', email: rows[0].username, role: 'admin', department: null, avatar: null };
+    return {
+      id: userId,
+      name: 'مدير النظام',
+      email: rows[0].username === 'admin' ? 'admin@hadir.edu' : rows[0].username,
+      role: 'admin',
+      student_id: null,
+      department: null,
+      avatar: null,
+      is_frozen: false,
+      freeze_reason: null,
+      two_factor_enabled: false,
+    };
   }
 
-  // Normal user
   const [rows] = await pool.execute<any[]>(
-    `SELECT id, name, email, role, student_id, teacher_code, department, avatar, is_frozen, freeze_reason, two_factor_enabled
+    `SELECT id, name, email, role, student_id, teacher_code, department, academic_year, avatar, is_frozen, freeze_reason, two_factor_enabled
      FROM users WHERE id = ? AND deleted_at IS NULL AND is_active = 1`,
     [userId]
   );
-  return rows.length ? rows[0] : null;
+  if (!rows.length) return null;
+  const u = rows[0];
+  return {
+    id:                 u.id,
+    name:               u.name,
+    email:              u.email,
+    role:               u.role,
+    student_id:         u.student_id ?? null,
+    teacher_code:       u.teacher_code ?? null,
+    department:         u.department ?? null,
+    academic_year:      u.academic_year ?? null,
+    avatar:             u.avatar ?? null,
+    is_frozen:          Boolean(u.is_frozen),
+    freeze_reason:      u.freeze_reason ?? null,
+    two_factor_enabled: Boolean(u.two_factor_enabled),
+  };
 };
 
 // ─────────────────────────────────────────────────────────────

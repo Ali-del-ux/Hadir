@@ -68,7 +68,7 @@ export function ProfileView() {
 
     try {
       setSavingPassword(true);
-      await api.post('/auth/change-password', {
+      await api.put('/auth/password', {
         currentPassword: passwordData.currentPassword,
         newPassword: passwordData.newPassword,
       });

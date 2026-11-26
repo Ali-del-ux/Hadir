@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Award, Save, Settings2, Sliders, CheckCircle2, AlertCircle, RefreshCw, ChevronDown, Download, Plus, Trash2 } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Award, Save, Settings2, Sliders, CheckCircle2, AlertCircle, RefreshCw, Download, Plus, Trash2, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
@@ -32,7 +32,7 @@ interface StudentRow {
   studentId: string;
   studentName: string;
   studentNumber: string;
-  attendancePercentage: number;
+  attendancePercentage: number | null;
   scores: Record<number, number | null>;
   totalScore: number | null;
   letterGrade: string | null;
@@ -58,6 +58,8 @@ export function TeacherGradebook() {
   const [loading, setLoading] = useState(false);
   const [editingScores, setEditingScores] = useState<Record<string, Record<number, number>>>({});
   const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [showWeightsModal, setShowWeightsModal] = useState(false);
   const [weightsForm, setWeightsForm] = useState<Array<{ id?: number; name: string; category: any; weight: number; max_score: number }>>([]);
 
@@ -90,6 +92,8 @@ export function TeacherGradebook() {
 
   useEffect(() => {
     if (selectedCourseId) {
+      setEditingScores({});
+      setSearchQuery('');
       loadGradebook(selectedCourseId);
     }
   }, [selectedCourseId]);
@@ -138,46 +142,123 @@ export function TeacherGradebook() {
     }
   };
 
+  const pendingEntriesCount = useMemo(
+    () =>
+      Object.values(editingScores).reduce(
+        (sum, itemsMap) => sum + Object.keys(itemsMap || {}).length,
+        0
+      ),
+    [editingScores]
+  );
+
+  const filteredStudents = useMemo(() => {
+    if (!gradebook?.students) return [];
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return gradebook.students;
+    return gradebook.students.filter(
+      (s) =>
+        s.studentName.toLowerCase().includes(q) ||
+        String(s.studentNumber || '').toLowerCase().includes(q)
+    );
+  }, [gradebook?.students, searchQuery]);
+
   const handleScoreChange = (studentId: string, gradeItemId: number, value: string) => {
+    if (value.trim() === '') {
+      setEditingScores((prev) => {
+        const copy = { ...prev };
+        if (copy[studentId]) {
+          const studentCopy = { ...copy[studentId] };
+          delete studentCopy[gradeItemId];
+          if (Object.keys(studentCopy).length === 0) {
+            delete copy[studentId];
+          } else {
+            copy[studentId] = studentCopy;
+          }
+        }
+        return copy;
+      });
+      return;
+    }
     const num = parseFloat(value);
+    if (isNaN(num)) return;
     setEditingScores((prev) => ({
       ...prev,
       [studentId]: {
         ...(prev[studentId] || {}),
-        [gradeItemId]: isNaN(num) ? 0 : num,
+        [gradeItemId]: num,
       },
     }));
   };
 
-  const saveStudentScore = async (studentId: string, gradeItemId: number) => {
+  const saveStudentRow = async (studentId: string) => {
     const studentEdits = editingScores[studentId];
-    if (!studentEdits || studentEdits[gradeItemId] === undefined) return;
+    if (!studentEdits) return;
 
-    const score = studentEdits[gradeItemId];
-    setSavingStudentId(`${studentId}_${gradeItemId}`);
+    const entries = Object.entries(studentEdits).map(([gradeItemId, score]) => ({
+      studentId,
+      gradeItemId: Number(gradeItemId),
+      score,
+    }));
+    if (entries.length === 0) return;
 
+    setSavingStudentId(studentId);
     try {
-      const res = await api.post(`/grades/course/${selectedCourseId}/student-grade`, {
-        studentId,
-        gradeItemId,
-        score,
-      });
-
+      const res = await api.post(`/grades/course/${selectedCourseId}/student-grades/batch`, { entries });
       if (res.success) {
+        setEditingScores((prev) => {
+          const copy = { ...prev };
+          delete copy[studentId];
+          return copy;
+        });
         toast({
-          title: 'تم الحفظ بنجاح',
-          description: 'تم تحديث الدرجة وإعادة حساب المجموع والتقدير تلقائياً.',
+          title: 'تم حفظ درجات الطالب بنجاح',
+          description: 'تم تحديث الدرجات وإعادة احتساب المجموع والتقدير تلقائياً.',
         });
         await loadGradebook(selectedCourseId);
       }
     } catch (err: any) {
       toast({
         title: 'خطأ أثناء الحفظ',
-        description: err.message || 'فشل رصد الدرجة',
+        description: err.message || 'فشل رصد الدرجات',
         variant: 'destructive',
       });
     } finally {
       setSavingStudentId(null);
+    }
+  };
+
+  const saveAllStudents = async () => {
+    const entries: Array<{ studentId: string; gradeItemId: number; score: number }> = [];
+    for (const [studentId, itemsMap] of Object.entries(editingScores)) {
+      for (const [gradeItemId, score] of Object.entries(itemsMap || {})) {
+        entries.push({
+          studentId,
+          gradeItemId: Number(gradeItemId),
+          score,
+        });
+      }
+    }
+    if (entries.length === 0) return;
+
+    setSavingAll(true);
+    try {
+      const res = await api.post(`/grades/course/${selectedCourseId}/student-grades/batch`, { entries });
+      if (res.success) {
+        setEditingScores({});
+        toast({
+          title: 'تم حفظ جميع الدرجات بنجاح',
+          description: res.message || `تم حفظ ${entries.length} درجة وتحديث المعدلات تلقائياً.`,
+        });
+        await loadGradebook(selectedCourseId);
+      }
+    } catch (err: any) {
+      toast({
+        title: 'خطأ أثناء حفظ الكل',
+        description: err.message || 'فشل حفظ الدرجات',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingAll(false);
     }
   };
 
@@ -221,7 +302,7 @@ export function TeacherGradebook() {
       const row: Record<string, any> = {
         'رقم القيد': s.studentNumber,
         'اسم الطالب': s.studentName,
-        'نسبة الحضور (%)': `${s.attendancePercentage}%`,
+        'نسبة الحضور (%)': s.attendancePercentage !== null && s.attendancePercentage !== undefined ? `${s.attendancePercentage}%` : '—',
       };
 
       gradebook.gradeItems.forEach((item) => {
@@ -284,6 +365,25 @@ export function TeacherGradebook() {
           </Button>
 
           <Button
+            size="sm"
+            onClick={saveAllStudents}
+            disabled={pendingEntriesCount === 0 || savingAll || savingStudentId !== null}
+            className="gradient-primary text-primary-foreground font-bold flex items-center gap-1.5 shadow-sm"
+          >
+            {savingAll ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+            <span>حفظ الكل</span>
+            {pendingEntriesCount > 0 && (
+              <span className="bg-white/20 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                {pendingEntriesCount}
+              </span>
+            )}
+          </Button>
+
+          <Button
             variant="secondary"
             size="sm"
             onClick={exportToExcel}
@@ -294,6 +394,36 @@ export function TeacherGradebook() {
           </Button>
         </div>
       </div>
+
+      {/* Search Bar & Students Counter */}
+      {gradebook && gradebook.students.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-card p-3.5 rounded-2xl border border-border/70">
+          <div className="relative flex-1 max-w-md">
+            <Search className="w-4 h-4 text-muted-foreground absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <Input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="ابحث باسم الطالب أو رقم القيد..."
+              className="pr-9 pl-8 h-9 text-sm bg-background"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                title="مسح البحث"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground font-medium">
+            عرض <span className="font-bold text-foreground">{filteredStudents.length}</span> من أصل{' '}
+            <span className="font-bold text-foreground">{gradebook.students.length}</span> طالب
+          </div>
+        </div>
+      )}
 
       {/* Grade Items Summary Pills */}
       {gradebook && (
@@ -326,6 +456,10 @@ export function TeacherGradebook() {
           <div className="py-16 text-center text-muted-foreground">
             لا يوجد طلاب مسجلون في هذا المقرر حالياً.
           </div>
+        ) : filteredStudents.length === 0 ? (
+          <div className="py-16 text-center text-muted-foreground">
+            لا يوجد طلاب مطابقون لنتيجة البحث "{searchQuery}".
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-right text-sm">
@@ -334,7 +468,7 @@ export function TeacherGradebook() {
                   <th className="py-3.5 px-4">الطالب</th>
                   <th className="py-3.5 px-3">حضور المحاضرات</th>
                   {gradebook.gradeItems.map((item) => (
-                    <th key={item.id} className="py-3.5 px-3 min-w-[130px]">
+                    <th key={item.id} className="py-3.5 px-3 min-w-[110px]">
                       {item.name}
                       <span className="block text-[10px] font-normal text-muted-foreground">
                         وزن: {item.weight}% • أقصى: {item.max_score}
@@ -344,15 +478,21 @@ export function TeacherGradebook() {
                   <th className="py-3.5 px-3">المجموع النهائي</th>
                   <th className="py-3.5 px-3">التقدير</th>
                   <th className="py-3.5 px-3">النقاط (4.0)</th>
+                  <th className="py-3.5 px-3 text-center">إجراء</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {gradebook.students.map((student) => {
+                {filteredStudents.map((student) => {
                   const isHighAchiever = (student.totalScore || 0) >= 85;
                   const isLow = student.totalScore !== null && student.totalScore < 60;
+                  const studentHasEdits = Object.keys(editingScores[student.studentId] || {}).length > 0;
+                  const isSavingRow = savingStudentId === student.studentId;
 
                   return (
-                    <tr key={student.studentId} className="hover:bg-muted/30 transition-colors">
+                    <tr
+                      key={student.studentId}
+                      className={`hover:bg-muted/30 transition-colors ${studentHasEdits ? 'bg-primary/5' : ''}`}
+                    >
                       <td className="py-3 px-4">
                         <div className="font-bold text-foreground">{student.studentName}</div>
                         <div className="text-xs text-muted-foreground font-mono">{student.studentNumber}</div>
@@ -362,10 +502,18 @@ export function TeacherGradebook() {
                         <div className="flex items-center gap-1.5">
                           <span
                             className={`inline-block w-2 h-2 rounded-full ${
-                              student.attendancePercentage >= 75 ? 'bg-emerald-500' : 'bg-rose-500'
+                              student.attendancePercentage === null || student.attendancePercentage === undefined
+                                ? 'bg-muted-foreground/40'
+                                : student.attendancePercentage >= 75
+                                ? 'bg-emerald-500'
+                                : 'bg-rose-500'
                             }`}
                           />
-                          <span className="font-semibold text-foreground">{student.attendancePercentage}%</span>
+                          <span className="font-semibold text-foreground">
+                            {student.attendancePercentage !== null && student.attendancePercentage !== undefined
+                              ? `${student.attendancePercentage}%`
+                              : '—'}
+                          </span>
                         </div>
                       </td>
 
@@ -376,43 +524,29 @@ export function TeacherGradebook() {
                             : student.scores[item.id];
 
                         const isAttendance = item.category === 'attendance';
-                        const isSaving = savingStudentId === `${student.studentId}_${item.id}`;
+                        const isCellEdited = editingScores[student.studentId]?.[item.id] !== undefined;
 
                         return (
                           <td key={item.id} className="py-3 px-3">
                             {isAttendance ? (
                               <div className="text-xs font-semibold bg-muted/50 px-2 py-1.5 rounded-lg inline-block text-muted-foreground">
-                                {currentScore !== null ? `${currentScore} / ${item.max_score}` : '-'}
+                                {currentScore !== null && currentScore !== undefined ? `${currentScore} / ${item.max_score}` : '—'}
                                 <span className="text-[10px] block text-primary font-normal">محسوب تلقائياً</span>
                               </div>
                             ) : (
-                              <div className="flex items-center gap-1.5">
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  max={item.max_score}
-                                  value={currentScore ?? ''}
-                                  placeholder="0"
-                                  onChange={(e) =>
-                                    handleScoreChange(student.studentId, item.id, e.target.value)
-                                  }
-                                  className="h-8 w-16 text-center text-xs font-semibold border-border bg-background"
-                                />
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  disabled={isSaving}
-                                  onClick={() => saveStudentScore(student.studentId, item.id)}
-                                  className="h-8 w-8 hover:bg-primary/10 hover:text-primary"
-                                  title="حفظ الدرجة"
-                                >
-                                  {isSaving ? (
-                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                  ) : (
-                                    <Save className="w-3.5 h-3.5" />
-                                  )}
-                                </Button>
-                              </div>
+                              <Input
+                                type="number"
+                                min="0"
+                                max={item.max_score}
+                                value={currentScore ?? ''}
+                                placeholder="—"
+                                onChange={(e) =>
+                                  handleScoreChange(student.studentId, item.id, e.target.value)
+                                }
+                                className={`h-8 w-20 text-center text-xs font-semibold bg-background ${
+                                  isCellEdited ? 'border-primary ring-1 ring-primary/40' : 'border-border'
+                                }`}
+                              />
                             )}
                           </td>
                         );
@@ -428,7 +562,7 @@ export function TeacherGradebook() {
                               : 'text-foreground'
                           }`}
                         >
-                          {student.totalScore !== null ? `${student.totalScore}%` : '-'}
+                          {student.totalScore !== null && student.totalScore !== undefined ? `${student.totalScore}%` : '—'}
                         </span>
                       </td>
 
@@ -442,12 +576,30 @@ export function TeacherGradebook() {
                               : 'bg-muted text-muted-foreground'
                           }`}
                         >
-                          {student.letterGrade || '-'}
+                          {student.letterGrade || '—'}
                         </span>
                       </td>
 
                       <td className="py-3 px-3 font-semibold text-foreground">
-                        {student.gradePoints !== null ? student.gradePoints.toFixed(2) : '-'}
+                        {student.gradePoints !== null && student.gradePoints !== undefined ? student.gradePoints.toFixed(2) : '—'}
+                      </td>
+
+                      <td className="py-3 px-3 text-center">
+                        <Button
+                          size="sm"
+                          variant={studentHasEdits ? 'default' : 'outline'}
+                          disabled={!studentHasEdits || isSavingRow || savingAll}
+                          onClick={() => saveStudentRow(student.studentId)}
+                          className="h-8 px-3 text-xs font-bold gap-1"
+                          title="حفظ درجات هذا الطالب"
+                        >
+                          {isSavingRow ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Save className="w-3.5 h-3.5" />
+                          )}
+                          <span>حفظ</span>
+                        </Button>
                       </td>
                     </tr>
                   );

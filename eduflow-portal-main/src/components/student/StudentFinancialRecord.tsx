@@ -321,7 +321,9 @@ export function StudentFinancialRecord() {
                 </div>
                 <div className="col-span-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex justify-between items-center">
                   <span className="text-[11px] text-amber-700 font-semibold">المبلغ المتبقي على الطالب بعد هذا الإيصال:</span>
-                  <span className="font-bold text-amber-600">{remainingAmount.toLocaleString()} د.ل</span>
+                  <span className="font-bold text-amber-600">
+                    {(selectedReceipt?.balance_after !== undefined ? selectedReceipt.balance_after : remainingAmount).toLocaleString()} د.ل
+                  </span>
                 </div>
               </div>
             </div>

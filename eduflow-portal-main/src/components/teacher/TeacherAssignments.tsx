@@ -249,7 +249,7 @@ export function TeacherAssignments({ onBack }: TeacherAssignmentsProps) {
 
   const handleDownloadSubmission = async (submissionId: number, originalFileName?: string) => {
     try {
-      const token = localStorage.getItem('token');
+      const token = localStorage.getItem('hadir_token');
       const response = await fetch(`/api/assignments/teacher/submissions/${submissionId}/download`, {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -273,6 +273,37 @@ export function TeacherAssignments({ onBack }: TeacherAssignmentsProps) {
       toast({
         title: 'خطأ أثناء التحميل',
         description: err.message || 'تعذر تحميل ملف الطالب',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDownloadAssignmentFile = async (assignment: Assignment) => {
+    try {
+      const token = localStorage.getItem('hadir_token');
+      const response = await fetch(`/api/assignments/teacher/${encodeURIComponent(assignment.id)}/download`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('فشل تحميل ملف الواجب من الخادم');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = assignment.file_name || `assignment-${assignment.id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(link);
+    } catch (err: any) {
+      toast({
+        title: 'خطأ أثناء التحميل',
+        description: err.message || 'تعذر تحميل ملف الواجب',
         variant: 'destructive',
       });
     }
@@ -536,6 +567,7 @@ export function TeacherAssignments({ onBack }: TeacherAssignmentsProps) {
                 key={assignment.id}
                 assignment={assignment}
                 onDelete={handleDelete}
+                onDownload={() => handleDownloadAssignmentFile(assignment)}
                 onViewSubmissions={() => handleViewSubmissions(assignment)}
               />
             ))
@@ -553,12 +585,14 @@ export function TeacherAssignments({ onBack }: TeacherAssignmentsProps) {
 }
 
 interface AssignmentCardProps {
-  assignment: Assignment & { courseCode?: string };
+  assignment: Assignment & { courseCode?: string; submissions_count?: number };
   onDelete: (id: string) => void;
+  onDownload: () => void;
   onViewSubmissions: () => void;
 }
 
-function AssignmentCard({ assignment, onDelete, onViewSubmissions }: AssignmentCardProps) {
+function AssignmentCard({ assignment, onDelete, onDownload, onViewSubmissions }: AssignmentCardProps) {
+  const count = assignment.submitted_count ?? assignment.submissions_count ?? 0;
   return (
     <div className="bg-card p-4 sm:p-5 rounded-2xl shadow-sm border border-border/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-primary/30 transition-all">
       <div className="flex items-start gap-3.5">
@@ -585,7 +619,7 @@ function AssignmentCard({ assignment, onDelete, onViewSubmissions }: AssignmentC
             <span>•</span>
             <span className="flex items-center gap-1 text-[11px] text-primary font-semibold">
               <Users className="w-3 h-3" />
-              تم التسليم: {assignment.submitted_count ?? 0} طالب
+              تم التسليم: {count} طالب
             </span>
             {assignment.graded_count !== undefined && assignment.graded_count > 0 && (
               <>
@@ -606,14 +640,14 @@ function AssignmentCard({ assignment, onDelete, onViewSubmissions }: AssignmentC
           className="gradient-primary text-primary-foreground font-bold text-xs h-9 px-4 rounded-xl shadow-sm"
         >
           <Eye className="w-3.5 h-3.5 ml-1.5" />
-          عرض وتقييم التسليمات ({assignment.submitted_count ?? 0})
+          عرض وتقييم التسليمات ({count})
         </Button>
 
         {assignment.file_url && (
           <Button
             variant="outline"
             size="sm"
-            onClick={() => window.open(assignment.file_url!, '_blank')}
+            onClick={onDownload}
             title="تحميل ملف الواجب"
             className="h-9 px-3 rounded-xl border-border/60 hover:text-primary"
           >

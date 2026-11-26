@@ -107,7 +107,7 @@ export function EnrollmentManagement({ onBack }: EnrollmentManagementProps) {
   const handleToggleStudent = async (studentId: string) => {
     if (!selectedCourse) return;
     
-    const isEnrolled = enrollments.some(e => e.student_id === studentId);
+    const isEnrolled = enrollments.some(e => e.student_id === studentId || e.studentId === studentId || e.id === studentId);
     const student = students.find(s => s.id === studentId);
 
     try {
@@ -125,6 +125,7 @@ export function EnrollmentManagement({ onBack }: EnrollmentManagementProps) {
         });
       }
       fetchEnrollments(); // Refresh enrollments
+      fetchData(); // Refresh course students_count
     } catch (error) {
       toast({
         title: 'خطأ',
@@ -188,7 +189,7 @@ export function EnrollmentManagement({ onBack }: EnrollmentManagementProps) {
               تعيين المعلم
             </h4>
             <Select
-              value={selectedCourse.teacherId || ''}
+              value={selectedCourse.teacherId || (selectedCourse as any).teacher_id || ''}
               onValueChange={handleAssignTeacher}
             >
               <SelectTrigger>
@@ -202,10 +203,10 @@ export function EnrollmentManagement({ onBack }: EnrollmentManagementProps) {
                 ))}
               </SelectContent>
             </Select>
-            {selectedCourse.teacherName && selectedCourse.teacherName !== 'غير معين' && (
+            {(selectedCourse.teacherName || (selectedCourse as any).teacher_name) && (
               <p className="text-xs text-success flex items-center gap-1">
                 <Check className="w-3 h-3" />
-                المعلم الحالي: {selectedCourse.teacherName}
+                المعلم الحالي: {selectedCourse.teacherName || (selectedCourse as any).teacher_name}
               </p>
             )}
           </div>
@@ -221,7 +222,7 @@ export function EnrollmentManagement({ onBack }: EnrollmentManagementProps) {
             </h4>
             <div className="space-y-2">
               {students.map((student) => {
-                const isEnrolled = enrollments.some(e => e.student_id === student.id);
+                const isEnrolled = enrollments.some(e => e.student_id === student.id || e.studentId === student.id || e.id === student.id);
                 return (
                   <div
                     key={student.id}
@@ -240,7 +241,7 @@ export function EnrollmentManagement({ onBack }: EnrollmentManagementProps) {
                       </div>
                       <div>
                         <p className="font-medium text-sm text-foreground">{student.name}</p>
-                        <p className="text-xs text-muted-foreground">{student.studentId}</p>
+                        <p className="text-xs text-muted-foreground">{student.student_id || student.studentId || student.email}</p>
                       </div>
                     </div>
                     <span className={`text-xs font-medium ${isEnrolled ? 'text-success' : 'text-muted-foreground'}`}>
@@ -253,9 +254,8 @@ export function EnrollmentManagement({ onBack }: EnrollmentManagementProps) {
           </div>
         </div>
       )}
+        </div>
+      )}
     </div>
-  )
-}
-  </div>
   );
 }

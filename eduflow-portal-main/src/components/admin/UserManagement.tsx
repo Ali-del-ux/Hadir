@@ -75,16 +75,29 @@ export function UserManagement({ onBack }: UserManagementProps) {
 
   const [editingUser, setEditingUser] = useState<User | null>(null);
 
-  const handleUpdate = async (updated: User) => {
+  const handleUpdate = async (updated: User & { is_active?: boolean | number }) => {
     try {
-      await api.put(`/admin/users/${updated.id}`, updated);
-      setUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
+      const payload: Record<string, any> = {
+        name: updated.name,
+        email: updated.email,
+        role: updated.role,
+      };
+      if (updated.department) payload.department = updated.department;
+      if (updated.role === 'student' && (updated.student_id || updated.studentId)) {
+        payload.student_id = updated.student_id || updated.studentId;
+      }
+      if (updated.is_active !== undefined) {
+        payload.is_active = Boolean(updated.is_active);
+      }
+      const res = await api.put(`/admin/users/${updated.id}`, payload);
+      const savedUser = res?.data || updated;
+      setUsers(prev => prev.map(u => u.id === updated.id ? { ...u, ...savedUser } : u));
       setEditingUser(null);
       toast({ title: 'تم التعديل', description: `${updated.name} تم تحديث البيانات` });
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: 'خطأ',
-        description: 'فشل في تحديث المستخدم',
+        description: error.message || 'فشل في تحديث المستخدم',
         variant: 'destructive',
       });
     }
@@ -141,34 +154,50 @@ export function UserManagement({ onBack }: UserManagementProps) {
         {editingUser && (
           <EditUserDialog user={editingUser} onClose={() => setEditingUser(null)} onUpdate={handleUpdate} />
         )}
+        {techSupportUser && (
+          <TechSupportResetDialog user={techSupportUser} onClose={() => setTechSupportUser(null)} />
+        )}
       </div>
     </div>
   );
 }
 
 interface UserCardProps {
-  user: User;
+  user: User & { teacher_code?: string; department?: string; is_frozen?: number | boolean };
   onDelete: () => void;
   onEdit?: () => void;
+  onTechSupport?: () => void;
 }
 
 function UserCard({ user, onDelete, onEdit, onTechSupport }: UserCardProps) {
-  const Icon = user.role === 'teacher' ? BookOpen : GraduationCap;
-  const roleLabel = user.role === 'teacher' ? 'معلم' : 'طالب';
-  const variant = user.role === 'teacher' ? 'primary' : 'success';
+  const isAdmin = user.role === 'admin';
+  const isTeacher = user.role === 'teacher';
+  const Icon = isAdmin ? ShieldCheck : isTeacher ? BookOpen : GraduationCap;
+  const roleLabel = isAdmin ? 'مدير النظام' : isTeacher ? 'معلم' : 'طالب';
+  const variant = isAdmin ? 'warning' : isTeacher ? 'primary' : 'success';
 
   return (
     <div className="bg-card p-4 rounded-xl shadow-card border border-border/50 flex justify-between items-center hover:shadow-card-hover transition-all">
       <div className="flex items-center gap-3">
         <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-          user.role === 'teacher' ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success'
+          isAdmin ? 'bg-amber-500/10 text-amber-600' : isTeacher ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success'
         }`}>
           <Icon className="w-5 h-5" />
         </div>
         <div>
-          <h4 className="font-bold text-foreground">{user.name}</h4>
+          <div className="flex items-center gap-2">
+            <h4 className="font-bold text-foreground">{user.name}</h4>
+            {user.is_frozen ? (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/20">
+                حساب مجمد
+              </span>
+            ) : null}
+          </div>
           <p className="text-xs text-muted-foreground">
-            {user.email} {user.studentId && `• ${user.studentId}`}
+            {user.email}
+            {(user.student_id || user.studentId) && ` • قيد: ${user.student_id || user.studentId}`}
+            {user.teacher_code && ` • كود: ${user.teacher_code}`}
+            {user.department && ` • ${user.department}`}
           </p>
         </div>
       </div>
@@ -180,28 +209,32 @@ function UserCard({ user, onDelete, onEdit, onTechSupport }: UserCardProps) {
         <button onClick={typeof onEdit === 'function' ? onEdit : undefined} className="p-1.5 text-primary hover:bg-primary/10 rounded-lg transition-colors">
           <Edit2 className="w-4 h-4" />
         </button>
-        <button 
-          onClick={onDelete}
-          className="p-1.5 text-destructive hover:bg-destructive/10 rounded-lg transition-colors"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
+        {!isAdmin && (
+          <button 
+            onClick={onDelete}
+            title="حذف المستخدم"
+            className="p-1.5 text-destructive hover:bg-destructive/10 rounded-lg transition-colors"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
 interface EditUserDialogProps {
-  user: User;
+  user: User & { is_active?: boolean | number };
   onClose: () => void;
-  onUpdate: (user: User) => void;
+  onUpdate: (user: User & { is_active?: boolean | number }) => void;
 }
 
 function EditUserDialog({ user, onClose, onUpdate }: EditUserDialogProps) {
   const [name, setName] = useState(user.name || '');
   const [email, setEmail] = useState(user.email || '');
   const [role, setRole] = useState<User['role']>(user.role || 'student');
-  const [studentId, setStudentId] = useState(user.studentId || '');
+  const [studentId, setStudentId] = useState(user.student_id || user.studentId || '');
+  const [department, setDepartment] = useState(user.department || '');
   const [newPassword, setNewPassword] = useState('');
 
   const { toast } = useToast();
@@ -211,7 +244,16 @@ function EditUserDialog({ user, onClose, onUpdate }: EditUserDialogProps) {
       toast({ title: 'خطأ', description: 'أكمل الحقول المطلوبة', variant: 'destructive' });
       return;
     }
-    const updated: User = { ...user, name: name.trim(), email: email.trim(), role, studentId: role === 'student' ? studentId.trim() : undefined };
+    const cleanStudentId = role === 'student' && studentId.trim() ? studentId.trim() : undefined;
+    const updated: User & { is_active?: boolean | number } = {
+      id: user.id,
+      name: name.trim(),
+      email: email.trim(),
+      role,
+      department: department.trim() || undefined,
+      student_id: cleanStudentId,
+      is_active: user.is_active !== undefined ? Boolean(user.is_active) : true,
+    };
     
     if (newPassword.trim()) {
       const ok = window.confirm('هل أنت متأكد من تغيير كلمة المرور لهذا المستخدم؟');
@@ -241,6 +283,10 @@ function EditUserDialog({ user, onClose, onUpdate }: EditUserDialogProps) {
           <div>
             <label className="text-sm">البريد</label>
             <input className="w-full p-2 rounded mt-1 bg-input" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+          <div>
+            <label className="text-sm">القسم</label>
+            <input className="w-full p-2 rounded mt-1 bg-input" value={department} onChange={(e) => setDepartment(e.target.value)} />
           </div>
           <div className="flex gap-2">
             <button className={`flex-1 p-2 rounded ${role === 'student' ? 'gradient-primary text-primary-foreground' : 'border'}`} onClick={() => setRole('student')}>طالب</button>
@@ -274,16 +320,26 @@ function AddUserDialog({ onAdd }: AddUserDialogProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [role, setRole] = useState<'teacher' | 'student'>('student');
   const [studentId, setStudentId] = useState('');
   const [department, setDepartment] = useState('');
   const { toast } = useToast();
 
   const handleSubmit = async () => {
-    if (!name.trim() || !email.trim()) {
+    if (!name.trim() || !email.trim() || !password.trim()) {
       toast({
         title: 'خطأ',
-        description: 'يرجى ملء جميع الحقول المطلوبة',
+        description: 'يرجى ملء الاسم والبريد وكلمة المرور',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (password.trim().length < 6) {
+      toast({
+        title: 'خطأ',
+        description: 'كلمة المرور يجب أن لا تقل عن 6 أحرف',
         variant: 'destructive',
       });
       return;
@@ -302,6 +358,7 @@ function AddUserDialog({ onAdd }: AddUserDialogProps) {
       const userData = {
         name: name.trim(),
         email: email.trim(),
+        password: password.trim(),
         role,
         student_id: role === 'student' ? studentId.trim() : undefined,
         department: department.trim() || undefined,
@@ -316,6 +373,7 @@ function AddUserDialog({ onAdd }: AddUserDialogProps) {
       setOpen(false);
       setName('');
       setEmail('');
+      setPassword('');
       setStudentId('');
       setDepartment('');
     } catch (error: any) {
@@ -355,6 +413,16 @@ function AddUserDialog({ onAdd }: AddUserDialogProps) {
               placeholder="example@university.edu"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">كلمة المرور *</label>
+            <Input
+              type="password"
+              dir="ltr"
+              placeholder="6 أحرف على الأقل"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
             />
           </div>
           <div className="space-y-2">

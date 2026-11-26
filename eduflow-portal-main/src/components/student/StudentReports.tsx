@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getReportsApiUrl } from '@/config/reports';
-import { BarChart2, CheckCircle2, TrendingUp, Loader2, BookOpen, Clock, Calendar, Award, ChevronLeft, FileText, Printer, ShieldCheck, QrCode } from 'lucide-react';
+import { BarChart2, CheckCircle2, TrendingUp, Loader2, BookOpen, Clock, Calendar, Award, ChevronLeft, FileText, Printer, ShieldCheck, QrCode, AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useAuth } from '@/contexts/AuthContext';
@@ -12,8 +12,8 @@ interface EnrolledCourse {
   name: string;
   code: string;
   creditHours: number;
-  attendancePercentage: number;
-  finalGrade?: string;
+  attendancePercentage: number | null;
+  finalGrade?: string | null;
   totalScore?: number | null;
   letterGrade?: string | null;
   gradePoints?: number | null;
@@ -22,11 +22,11 @@ interface EnrolledCourse {
 }
 
 interface StudentStats {
-  gpa: number;
+  gpa: number | null;
   totalCredits: number;
   gradedCredits: number;
   enrolledCourses: number;
-  attendanceRate: number;
+  attendanceRate: number | null;
   courses: EnrolledCourse[];
 }
 
@@ -45,39 +45,48 @@ export function StudentReports() {
   const { toast } = useToast();
   const [stats, setStats] = useState<StudentStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [openCourseId, setOpenCourseId] = useState<string | null>(null);
   const [courseBreakdown, setCourseBreakdown] = useState<GradebookItem[] | null>(null);
   const [loadingBreakdown, setLoadingBreakdown] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const token = localStorage.getItem('hadir_token');
-        const res = await fetch(`${getReportsApiUrl()}/student`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-
-        if (!res.ok) throw new Error('فشل جلب التقارير الأكاديمية');
-
-        const data = await res.json();
-        if (data.success) {
-          setStats(data.data);
+  const fetchStats = async () => {
+    try {
+      setLoading(true);
+      setLoadError(null);
+      const token = localStorage.getItem('hadir_token');
+      const res = await fetch(`${getReportsApiUrl()}/student`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
         }
-      } catch (error) {
-        console.error('Error fetching student reports:', error);
-        toast({
-          variant: 'destructive',
-          title: 'خطأ',
-          description: 'فشل تحميل التقارير الأكاديمية من الخادم'
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
+      });
 
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.message || 'فشل جلب التقارير الأكاديمية');
+      }
+
+      if (data.success) {
+        setStats(data.data);
+      } else {
+        throw new Error(data?.message || 'فشل جلب التقارير الأكاديمية');
+      }
+    } catch (error: any) {
+      console.error('Error fetching student reports:', error);
+      const errMsg = error?.message || 'فشل تحميل التقارير الأكاديمية من الخادم';
+      setLoadError(errMsg);
+      toast({
+        variant: 'destructive',
+        title: 'خطأ',
+        description: errMsg
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchStats();
   }, [toast]);
 
@@ -88,7 +97,13 @@ export function StudentReports() {
     try {
       const res = await api.get(`/grades/student/course/${courseId}`);
       if (res.success) {
-        setCourseBreakdown(res.data);
+        if (Array.isArray(res.data)) {
+          setCourseBreakdown(res.data);
+        } else if (res.data && Array.isArray(res.data.items)) {
+          setCourseBreakdown(res.data.items);
+        } else {
+          setCourseBreakdown([]);
+        }
       }
     } catch (err) {
       console.error('Error fetching course breakdown:', err);
@@ -106,11 +121,37 @@ export function StudentReports() {
     );
   }
 
-  if (!stats) return null;
+  if (!stats) {
+    return (
+      <div className="bg-card border border-destructive/30 rounded-3xl p-8 text-center space-y-4">
+        <AlertCircle className="w-10 h-10 text-destructive mx-auto" />
+        <div className="space-y-1">
+          <h3 className="font-bold text-foreground">تعذر تحميل السجل الأكاديمي</h3>
+          <p className="text-xs text-muted-foreground">{loadError || 'حدث خطأ أثناء الاتصال بالخادم.'}</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={fetchStats} className="gap-1.5">
+          <RefreshCw className="w-3.5 h-3.5" />
+          إعادة المحاولة
+        </Button>
+      </div>
+    );
+  }
 
-  const gpa = Number(stats.gpa || 0).toFixed(2);
-  const gpaNum = parseFloat(gpa);
-  const gpaLevel = gpaNum >= 3.5 ? 'ممتاز' : gpaNum >= 3.0 ? 'جيد جداً' : gpaNum >= 2.5 ? 'جيد' : gpaNum >= 2.0 ? 'مقبول' : 'إنذار أكاديمي';
+  const hasGradedGpa = stats.gradedCredits > 0 && stats.gpa !== null && stats.gpa !== undefined;
+  const gpa = hasGradedGpa ? Number(stats.gpa).toFixed(2) : '—';
+  const gpaNum = hasGradedGpa ? Number(stats.gpa) : null;
+  const gpaLevel =
+    gpaNum === null
+      ? 'لا توجد درجات مقيمة بعد'
+      : gpaNum >= 3.75
+      ? 'امتياز مرتفع'
+      : gpaNum >= 3.5
+      ? 'ممتاز'
+      : gpaNum >= 3.0
+      ? 'جيد جداً'
+      : gpaNum >= 2.0
+      ? 'جيد'
+      : 'إنذار أكاديمي';
 
   return (
     <div className="space-y-6 animate-slideUp">
@@ -144,7 +185,7 @@ export function StudentReports() {
           <div className="flex justify-between items-start mb-3">
             <div>
               <span className="text-primary-foreground/80 text-xs font-semibold tracking-wide uppercase">
-                المعدل التراكمي التراكمي (GPA 4.0)
+                المعدل التراكمي المعتمد (GPA 4.0)
               </span>
               <div className="text-4xl sm:text-5xl font-black mt-1 tracking-tight">
                 {gpa}
@@ -167,7 +208,9 @@ export function StudentReports() {
             </div>
             <div>
               <div className="text-[11px] text-primary-foreground/75">متوسط الحضور</div>
-              <div className="text-base font-bold mt-0.5">{stats.attendanceRate}%</div>
+              <div className="text-base font-bold mt-0.5">
+                {stats.attendanceRate !== null && stats.attendanceRate !== undefined ? `${stats.attendanceRate}%` : '—'}
+              </div>
             </div>
           </div>
         </div>
@@ -187,8 +230,9 @@ export function StudentReports() {
         ) : (
           stats.courses.map((course) => {
             const percentage = course.attendancePercentage;
-            const isHighAtt = percentage >= 85;
-            const isLowAtt = percentage < 75;
+            const hasPct = percentage !== null && percentage !== undefined;
+            const isHighAtt = hasPct && percentage >= 85;
+            const isLowAtt = hasPct && percentage < 75;
 
             return (
               <div
@@ -213,12 +257,16 @@ export function StudentReports() {
 
                   <div className="text-left flex flex-col items-end">
                     <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-primary/10 text-primary">
-                      {course.letterGrade ? `${course.letterGrade} (${course.totalScore}%)` : 'قيد الرصد'}
+                      {course.letterGrade && course.totalScore !== null && course.totalScore !== undefined
+                        ? `${course.letterGrade} (${course.totalScore}%)`
+                        : (course.letterGrade || course.finalGrade)
+                        ? `${course.letterGrade || course.finalGrade}`
+                        : 'قيد الرصد'}
                     </span>
                     <span className="text-[11px] text-muted-foreground mt-1">
                       {course.gradePoints !== null && course.gradePoints !== undefined
                         ? `نقاط: ${course.gradePoints.toFixed(2)}`
-                        : ''}
+                        : '—'}
                     </span>
                   </div>
                 </div>
@@ -230,12 +278,12 @@ export function StudentReports() {
                     <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                       <div
                         className={`h-full transition-all duration-500 ${
-                          isHighAtt ? 'bg-emerald-500' : isLowAtt ? 'bg-rose-500' : 'bg-amber-500'
+                          !hasPct ? 'bg-muted-foreground/30' : isHighAtt ? 'bg-emerald-500' : isLowAtt ? 'bg-rose-500' : 'bg-amber-500'
                         }`}
-                        style={{ width: `${Math.min(100, percentage)}%` }}
+                        style={{ width: `${hasPct ? Math.min(100, percentage) : 0}%` }}
                       />
                     </div>
-                    <span className="font-bold text-foreground shrink-0">{percentage}%</span>
+                    <span className="font-bold text-foreground shrink-0">{hasPct ? `${percentage}%` : '—'}</span>
                   </div>
 
                   <span className="text-primary text-xs flex items-center gap-0.5 group-hover:translate-x-[-2px] transition-transform">
@@ -270,7 +318,7 @@ export function StudentReports() {
                   <div className="text-base font-bold text-foreground mt-0.5">{c.name}</div>
                   <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/40 text-xs text-muted-foreground">
                     <span>الساعات المعتمدة: <b>{c.creditHours}</b></span>
-                    <span>التقدير العام: <b className="text-primary font-bold">{c.letterGrade || 'لم يكتمل'}</b></span>
+                    <span>التقدير العام: <b className="text-primary font-bold">{c.letterGrade || c.finalGrade || 'لم يكتمل'}</b></span>
                     <span>المجموع: <b>{c.totalScore !== null && c.totalScore !== undefined ? `${c.totalScore}%` : '-'}</b></span>
                   </div>
                 </div>
@@ -288,8 +336,8 @@ export function StudentReports() {
                   <div className="space-y-2">
                     <div className="text-xs font-bold text-muted-foreground px-1">توزيع درجات المقرر والأوزان:</div>
                     <div className="divide-y divide-border/60 border border-border/60 rounded-2xl overflow-hidden bg-card">
-                      {courseBreakdown.map((item) => (
-                        <div key={item.gradeItemId} className="p-3 flex items-center justify-between text-xs">
+                      {courseBreakdown.map((item, idx) => (
+                        <div key={item.gradeItemId ?? idx} className="p-3 flex items-center justify-between text-xs">
                           <div>
                             <div className="font-bold text-foreground">{item.name}</div>
                             <div className="text-[10px] text-muted-foreground mt-0.5">
@@ -311,9 +359,11 @@ export function StudentReports() {
                 )}
 
                 <div className="bg-muted/30 p-3 rounded-xl text-xs text-muted-foreground flex items-center justify-between">
-                  <span>إجمالي المحاضرات: {c.total_lectures || 0}</span>
-                  <span>المحاضرات المحضورة: {c.attended_lectures || 0}</span>
-                  <span className="font-bold text-foreground">نسبة الحضور: {c.attendancePercentage}%</span>
+                  <span>إجمالي المحاضرات: {c.total_lectures ?? 0}</span>
+                  <span>المحاضرات المحضورة: {c.attended_lectures ?? 0}</span>
+                  <span className="font-bold text-foreground">
+                    نسبة الحضور: {c.attendancePercentage !== null && c.attendancePercentage !== undefined ? `${c.attendancePercentage}%` : '—'}
+                  </span>
                 </div>
               </div>
             );
@@ -396,10 +446,12 @@ export function StudentReports() {
                       <td className="p-2.5 font-mono font-bold">{c.code}</td>
                       <td className="p-2.5 font-bold text-foreground">{c.name}</td>
                       <td className="p-2.5 text-center font-bold">{c.creditHours}</td>
-                      <td className="p-2.5 text-center font-bold">{c.totalScore !== null && c.totalScore !== undefined ? `${c.totalScore}%` : 'قيد الرصد'}</td>
-                      <td className="p-2.5 text-center font-bold text-primary">{c.letterGrade || '-'}</td>
+                      <td className="p-2.5 text-center font-bold">{c.totalScore !== null && c.totalScore !== undefined ? `${c.totalScore}%` : (c.letterGrade || c.finalGrade ? 'معتمد' : 'قيد الرصد')}</td>
+                      <td className="p-2.5 text-center font-bold text-primary">{c.letterGrade || c.finalGrade || '-'}</td>
                       <td className="p-2.5 text-center font-mono font-bold">{c.gradePoints !== null && c.gradePoints !== undefined ? Number(c.gradePoints).toFixed(2) : '-'}</td>
-                      <td className="p-2.5 text-center font-bold text-emerald-600">{c.attendancePercentage}%</td>
+                      <td className="p-2.5 text-center font-bold text-emerald-600">
+                        {c.attendancePercentage !== null && c.attendancePercentage !== undefined ? `${c.attendancePercentage}%` : '—'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -415,7 +467,7 @@ export function StudentReports() {
                 </div>
                 <div>
                   <span className="text-[10px] text-muted-foreground block">المعدل التراكمي النهائي</span>
-                  <span className="text-xl font-black text-primary">{gpa} / 4.00</span>
+                  <span className="text-xl font-black text-primary">{hasGradedGpa ? `${gpa} / 4.00` : '—'}</span>
                 </div>
                 <div>
                   <span className="text-[10px] text-muted-foreground block">التقدير العام</span>
@@ -423,7 +475,10 @@ export function StudentReports() {
                 </div>
               </div>
               <div className="text-left text-[11px] text-muted-foreground">
-                متوسط الحضور الفصلي: <b className="text-foreground">{stats.attendanceRate}%</b>
+                متوسط الحضور الفصلي:{' '}
+                <b className="text-foreground">
+                  {stats.attendanceRate !== null && stats.attendanceRate !== undefined ? `${stats.attendanceRate}%` : '—'}
+                </b>
               </div>
             </div>
 

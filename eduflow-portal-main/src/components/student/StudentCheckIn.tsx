@@ -11,10 +11,12 @@ function getDeviceFingerprint(): string {
   }
 }
 
-import { useState, useEffect } from 'react';
-import { CheckCircle, Keyboard } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { CheckCircle, Keyboard, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
 import { api } from '@/lib/api';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 
@@ -34,15 +36,20 @@ interface AttendanceRecord {
 }
 
 export function StudentCheckIn() {
+  const { user } = useAuth();
   const [isScanning, setIsScanning] = useState(false);
+  const scanningLockRef = useRef(false);
+  const [scannerKey, setScannerKey] = useState(0);
   const [isSuccess, setIsSuccess] = useState(false);
   const [attendanceRecord, setAttendanceRecord] = useState<AttendanceRecord | null>(null);
+  const [showManualInput, setShowManualInput] = useState(false);
+  const [manualCode, setManualCode] = useState('');
   const { toast } = useToast();
 
   useEffect(() => {
     let scanner: Html5QrcodeScanner | null = null;
-    
-    if (!isSuccess) {
+
+    if (!isSuccess && !user?.is_frozen) {
       scanner = new Html5QrcodeScanner(
         "qr-reader",
         { fps: 10, qrbox: { width: 250, height: 250 } },
@@ -51,12 +58,13 @@ export function StudentCheckIn() {
       
       scanner.render(
         async (decodedText) => {
-          if (isScanning) return; // Prevent multiple submissions
+          if (scanningLockRef.current) return; // Prevent multiple rapid submissions (ref lock avoids stale closure)
           
+          scanningLockRef.current = true;
           setIsScanning(true);
           try {
             // Stop scanning after successful read
-            scanner?.clear();
+            scanner?.clear().catch(() => {});
             
             const response = await api.post('/attendance/student/scan', { qr_code: decodedText.trim(), device_fingerprint: getDeviceFingerprint() });
             
@@ -77,33 +85,38 @@ export function StudentCheckIn() {
               description: error.message || 'يرجى المحاولة مرة أخرى',
               variant: 'destructive',
             });
-            // Re-render scanner if it failed
+            scanningLockRef.current = false;
             setIsScanning(false);
+            setScannerKey((k) => k + 1);
           }
         },
-        (error) => {
+        () => {
           // Ignore frequent scan errors
         }
       );
     }
 
     return () => {
-      scanner?.clear().catch(console.error);
+      scanner?.clear().catch(() => {});
     };
-  }, [isSuccess]);
+  }, [isSuccess, scannerKey, user?.is_frozen]);
 
-  const handleManualEntry = async () => {
-    const qrCode = prompt('أدخل رمز QR يدوياً:');
-    if (!qrCode || qrCode.trim() === '') return;
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const qrCode = manualCode.trim();
+    if (!qrCode || scanningLockRef.current) return;
 
+    scanningLockRef.current = true;
     setIsScanning(true);
 
     try {
-      const response = await api.post('/attendance/student/scan', { qr_code: qrCode.trim(), device_fingerprint: getDeviceFingerprint() });
+      const response = await api.post('/attendance/student/scan', { qr_code: qrCode, device_fingerprint: getDeviceFingerprint() });
 
       if (response.success) {
         setAttendanceRecord(response.data);
         setIsSuccess(true);
+        setShowManualInput(false);
+        setManualCode('');
         toast({
           title: 'تم تسجيل الحضور بنجاح! ✓',
           description: `${response.data.course_name} - ${response.data.date} ${response.data.time}`,
@@ -119,9 +132,29 @@ export function StudentCheckIn() {
         variant: 'destructive',
       });
     } finally {
+      scanningLockRef.current = false;
       setIsScanning(false);
     }
   };
+
+  if (user?.is_frozen) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[55vh] text-center space-y-4 animate-slideUp">
+        <div className="w-20 h-20 rounded-full bg-destructive/15 border-2 border-destructive/30 flex items-center justify-center text-destructive">
+          <ShieldAlert className="w-10 h-10" />
+        </div>
+        <div className="max-w-md space-y-2">
+          <h2 className="text-xl font-black text-destructive">تسجيل الحضور متوقف مؤقتاً</h2>
+          <p className="text-sm text-foreground/90 font-medium">
+            {user.freeze_reason || 'حسابك مجمد أكاديمياً لمراجعة الشؤون المالية، ولا يمكنك تسجيل الحضور حالياً.'}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            يمكنك الاطلاع على مقرراتك ودرجاتك وسجلك المالي، وسيتم تفعيل مسح رمز QR فور تسوية وضعك المالي.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (isSuccess && attendanceRecord) {
     return (
@@ -135,7 +168,7 @@ export function StudentCheckIn() {
           <p className="text-sm text-muted-foreground">{attendanceRecord.date} • {attendanceRecord.time}</p>
           <p className="text-xs text-muted-foreground">الرمز: {attendanceRecord.method === 'qr' ? 'مسح QR' : 'يدوي'}</p>
         </div>
-        <Button variant="outline" onClick={() => { setIsSuccess(false); setAttendanceRecord(null); setIsScanning(false); }}>
+        <Button variant="outline" onClick={() => { scanningLockRef.current = false; setIsSuccess(false); setAttendanceRecord(null); setIsScanning(false); }}>
           العودة للماسح
         </Button>
       </div>
@@ -161,10 +194,32 @@ export function StudentCheckIn() {
         </div>
       )}
 
-      <Button variant="outline" onClick={handleManualEntry} disabled={isScanning} className="w-full max-w-sm mt-4">
-        <Keyboard className="w-4 h-4 ml-2" />
-        إدخال الرمز يدوياً
-      </Button>
+      {!showManualInput ? (
+        <Button variant="outline" onClick={() => setShowManualInput(true)} disabled={isScanning} className="w-full max-w-sm mt-4">
+          <Keyboard className="w-4 h-4 ml-2" />
+          إدخال الرمز يدوياً
+        </Button>
+      ) : (
+        <form onSubmit={handleManualSubmit} className="w-full max-w-sm bg-card p-4 rounded-2xl border border-border space-y-3">
+          <label className="text-xs font-bold text-foreground block">أدخل رمز الحضور (HADIR:...)</label>
+          <Input
+            value={manualCode}
+            onChange={(e) => setManualCode(e.target.value)}
+            placeholder="HADIR:session:window:token"
+            dir="ltr"
+            className="font-mono text-xs"
+            required
+          />
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" className="flex-1 text-xs" onClick={() => { setShowManualInput(false); setManualCode(''); }}>
+              إلغاء
+            </Button>
+            <Button type="submit" disabled={isScanning || !manualCode.trim()} className="flex-1 text-xs gradient-primary text-primary-foreground font-bold">
+              {isScanning ? 'جاري التحقق...' : 'تأكيد الحضور'}
+            </Button>
+          </div>
+        </form>
+      )}
 
       <div className="text-center space-y-2 max-w-sm">
         <p className="text-xs text-muted-foreground">

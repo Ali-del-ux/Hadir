@@ -67,7 +67,8 @@ export function SettingsView() {
       setSecLoading(true);
       const res = await api.get('/security/status');
       if (res.success && res.data) {
-        setTwoFactorEnabled(res.data.twoFactorEnabled);
+        const is2FA = res.data.twoFactorEnabled !== undefined ? res.data.twoFactorEnabled : res.data.two_factor_enabled;
+        setTwoFactorEnabled(!!is2FA);
       }
     } catch (err) {
       console.error('Failed to load 2FA status:', err);

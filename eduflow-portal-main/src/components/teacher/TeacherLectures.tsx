@@ -42,12 +42,22 @@ export function TeacherLectures({ onBack }: TeacherLecturesProps) {
       const lecturesData = lecturesResponse.data || [];
       const enhancedLectures = lecturesData.map((lecture: any) => {
         const c = coursesData?.find((course: any) => course.id === lecture.course_id);
+        const rawSize = lecture.file_size;
+        let formattedSize = 'PDF';
+        if (typeof rawSize === 'number' && !isNaN(rawSize) && rawSize > 0) {
+          formattedSize = rawSize >= 1024 * 1024 ? `${(rawSize / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(rawSize / 1024))} KB`;
+        } else if (typeof rawSize === 'string' && rawSize.trim()) {
+          const num = Number(rawSize);
+          formattedSize = !isNaN(num) && num > 0
+            ? (num >= 1024 * 1024 ? `${(num / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(num / 1024))} KB`)
+            : rawSize;
+        }
         return {
           ...lecture,
           courseName: c?.name || 'مقرر دراسي',
           courseCode: c?.code || 'CODE',
-          fileSize: lecture.file_size ? `${(lecture.file_size / (1024 * 1024)).toFixed(1)} MB` : 'PDF',
-          date: new Date(lecture.created_at).toLocaleDateString('ar-LY', { year: 'numeric', month: 'short', day: 'numeric' })
+          fileSize: formattedSize,
+          date: new Date(lecture.created_at || lecture.date).toLocaleDateString('ar-LY', { year: 'numeric', month: 'short', day: 'numeric' })
         };
       });
 
@@ -97,6 +107,35 @@ export function TeacherLectures({ onBack }: TeacherLecturesProps) {
       });
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleDownloadLecture = async (lecture: Lecture) => {
+    try {
+      const token = localStorage.getItem('hadir_token');
+      const response = await fetch(`/api/lectures/teacher/${encodeURIComponent(lecture.id)}/download`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        throw new Error('فشل تحميل ملف المحاضرة');
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = lecture.file_name || `${lecture.title}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(link);
+    } catch (err: any) {
+      toast({
+        title: 'خطأ في التحميل',
+        description: err.message || 'تعذر تحميل ملف المحاضرة',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -301,7 +340,7 @@ export function TeacherLectures({ onBack }: TeacherLecturesProps) {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => window.open(lecture.file_url, '_blank')}
+                      onClick={() => handleDownloadLecture(lecture)}
                       className="text-xs font-bold h-8 px-2.5 rounded-xl"
                     >
                       <Download className="w-3.5 h-3.5 ml-1" />

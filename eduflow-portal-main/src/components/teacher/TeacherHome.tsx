@@ -255,6 +255,15 @@ export function TeacherHome({ onNavigate }: TeacherHomeProps) {
                     <Button
                       size="sm"
                       variant="outline"
+                      onClick={() => onNavigate('course-details', course)}
+                      className="text-xs font-bold h-8 rounded-xl"
+                    >
+                      <BookOpen className="w-3.5 h-3.5 ml-1" />
+                      التفاصيل
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
                       onClick={() => onNavigate('gradebook')}
                       className="text-xs font-bold h-8 rounded-xl"
                     >

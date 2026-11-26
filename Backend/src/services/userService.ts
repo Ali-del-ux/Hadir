@@ -6,8 +6,11 @@ export interface CreateUserRequest {
   name: string;
   email: string;
   role: 'teacher' | 'student';
-  student_id?: string;
-  department?: string;
+  student_id?: string | null;
+  studentId?: string | null;
+  teacher_code?: string | null;
+  department?: string | null;
+  academic_year?: string | null;
   password?: string;
 }
 
@@ -15,8 +18,12 @@ export interface UpdateUserRequest {
   name?: string;
   email?: string;
   role?: 'teacher' | 'student';
-  student_id?: string;
-  department?: string;
+  student_id?: string | null;
+  studentId?: string | null;
+  teacher_code?: string | null;
+  department?: string | null;
+  academic_year?: string | null;
+  avatar?: string | null;
   is_active?: boolean;
 }
 
@@ -27,27 +34,27 @@ export const getAllUsers = async (filters?: {
 }) => {
   try {
     let query = `
-      SELECT id, name, email, role, student_id, department, avatar, is_active, created_at
+      SELECT id, name, email, role, student_id, teacher_code, department, academic_year,
+             avatar, is_active, is_frozen, freeze_reason, created_at
       FROM users
       WHERE deleted_at IS NULL
     `;
     const params: any[] = [];
 
-    // Apply role filter
     if (filters?.role && filters.role !== 'all') {
       query += ` AND role = ?`;
       params.push(filters.role);
     }
 
-    // Apply search filter
     if (filters?.search) {
       query += ` AND (
         name LIKE ? OR 
         email LIKE ? OR 
-        student_id LIKE ?
+        student_id LIKE ? OR
+        teacher_code LIKE ?
       )`;
       const searchTerm = `%${filters.search}%`;
-      params.push(searchTerm, searchTerm, searchTerm);
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
     }
 
     query += ` ORDER BY created_at DESC`;
@@ -60,9 +67,14 @@ export const getAllUsers = async (filters?: {
       email: row.email,
       role: row.role,
       student_id: row.student_id,
+      studentId: row.student_id,
+      teacher_code: row.teacher_code,
       department: row.department,
+      academic_year: row.academic_year || null,
       avatar: row.avatar,
-      is_active: row.is_active,
+      is_active: Boolean(row.is_active),
+      is_frozen: Boolean(row.is_frozen),
+      freeze_reason: row.freeze_reason || null,
       created_at: row.created_at,
     }));
   } catch (error) {
@@ -75,7 +87,8 @@ export const getAllUsers = async (filters?: {
 export const getUserById = async (userId: string): Promise<User | null> => {
   try {
     const [rows] = await pool.execute<any[]>(
-      `SELECT id, name, email, role, student_id, department, avatar, is_active
+      `SELECT id, name, email, role, student_id, teacher_code, department, academic_year,
+              avatar, is_active, is_frozen, freeze_reason, two_factor_enabled
        FROM users 
        WHERE id = ? AND deleted_at IS NULL`,
       [userId]
@@ -92,8 +105,13 @@ export const getUserById = async (userId: string): Promise<User | null> => {
       email: row.email,
       role: row.role,
       student_id: row.student_id,
+      teacher_code: row.teacher_code,
       department: row.department,
+      academic_year: row.academic_year || null,
       avatar: row.avatar,
+      is_frozen: Boolean(row.is_frozen),
+      freeze_reason: row.freeze_reason || null,
+      two_factor_enabled: Boolean(row.two_factor_enabled),
     };
   } catch (error) {
     console.error('Error getting user:', error);
@@ -103,63 +121,81 @@ export const getUserById = async (userId: string): Promise<User | null> => {
 
 // Create user
 export const createUser = async (userData: CreateUserRequest) => {
+  const connection = await pool.getConnection();
   try {
-    // Check if email or student_id already exists
-    const [existing] = await pool.execute<any[]>(
+    await connection.beginTransaction();
+
+    const normalizedStudentId = userData.student_id ?? userData.studentId ?? null;
+
+    const [existing] = await connection.execute<any[]>(
       `SELECT id FROM users 
        WHERE (email = ? OR (student_id = ? AND student_id IS NOT NULL)) 
        AND deleted_at IS NULL`,
-      [userData.email, userData.student_id || '']
+      [userData.email, normalizedStudentId || '']
     );
 
     if (existing.length > 0) {
       throw new Error('Email or student ID already exists');
     }
 
-    // Determine password
     if (!userData.password) {
       throw new Error('A secure password is required for new users');
     }
-    const password = userData.password;
+    const passwordHash = await hashPassword(userData.password);
 
-    const passwordHash = await hashPassword(password);
+    const userId = normalizedStudentId || `user_${Date.now()}`;
+    const teacherCode = userData.role === 'teacher' ? (userData.teacher_code || userId) : null;
 
-    // Generate ID (you can use UUID or auto-increment)
-    const userId = userData.student_id || `user_${Date.now()}`;
-
-    await pool.execute(
-      `INSERT INTO users (id, name, email, password_hash, role, student_id, department, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    await connection.execute(
+      `INSERT INTO users (id, name, email, password_hash, role, student_id, teacher_code, department, academic_year, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         userId,
         userData.name,
         userData.email,
         passwordHash,
         userData.role,
-        userData.student_id || null,
+        userData.role === 'student' ? normalizedStudentId : null,
+        teacherCode,
         userData.department || null,
+        userData.academic_year || null,
         true,
       ]
     );
 
+    // Auto-create financial ledger record for new students
+    if (userData.role === 'student') {
+      await connection.execute(
+        `INSERT INTO student_financials (student_id, student_name, student_number, total_tuition, paid_amount, discount, status, is_frozen)
+         VALUES (?, ?, ?, 3500.00, 0.00, 0.00, 'unpaid', FALSE)
+         ON DUPLICATE KEY UPDATE student_name = VALUES(student_name), student_number = VALUES(student_number)`,
+        [userId, userData.name, normalizedStudentId || userId]
+      );
+    }
+
+    await connection.commit();
     return await getUserById(userId);
   } catch (error: any) {
+    await connection.rollback();
     console.error('Error creating user:', error);
     throw error;
+  } finally {
+    connection.release();
   }
 };
 
 // Update user
 export const updateUser = async (userId: string, userData: UpdateUserRequest) => {
   try {
-    // Check if user exists
     const existing = await getUserById(userId);
     if (!existing) {
       throw new Error('User not found');
     }
 
-    // Check if email or student_id conflicts with other users
-    if (userData.email || userData.student_id) {
+    const normalizedStudentId =
+      userData.student_id !== undefined ? userData.student_id : userData.studentId;
+
+    if (userData.email || normalizedStudentId) {
       const [conflicts] = await pool.execute<any[]>(
         `SELECT id FROM users 
          WHERE id != ? 
@@ -169,8 +205,8 @@ export const updateUser = async (userId: string, userData: UpdateUserRequest) =>
           userId,
           userData.email || '',
           userData.email || null,
-          userData.student_id || '',
-          userData.student_id || null,
+          normalizedStudentId || '',
+          normalizedStudentId || null,
         ]
       );
 
@@ -179,7 +215,6 @@ export const updateUser = async (userId: string, userData: UpdateUserRequest) =>
       }
     }
 
-    // Build update query dynamically
     const updates: string[] = [];
     const params: any[] = [];
 
@@ -195,13 +230,25 @@ export const updateUser = async (userId: string, userData: UpdateUserRequest) =>
       updates.push('role = ?');
       params.push(userData.role);
     }
-    if (userData.student_id !== undefined) {
+    if (normalizedStudentId !== undefined) {
       updates.push('student_id = ?');
-      params.push(userData.student_id || null);
+      params.push(normalizedStudentId || null);
+    }
+    if (userData.teacher_code !== undefined) {
+      updates.push('teacher_code = ?');
+      params.push(userData.teacher_code || null);
     }
     if (userData.department !== undefined) {
       updates.push('department = ?');
       params.push(userData.department || null);
+    }
+    if (userData.academic_year !== undefined) {
+      updates.push('academic_year = ?');
+      params.push(userData.academic_year || null);
+    }
+    if (userData.avatar !== undefined) {
+      updates.push('avatar = ?');
+      params.push(userData.avatar || null);
     }
     if (userData.is_active !== undefined) {
       updates.push('is_active = ?');
@@ -256,7 +303,7 @@ export const adminResetPassword = async (userId: string, newPassword: string) =>
     }
     const passwordHash = await hashPassword(newPassword);
     await pool.execute(
-      `UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+      `UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND deleted_at IS NULL`,
       [passwordHash, userId]
     );

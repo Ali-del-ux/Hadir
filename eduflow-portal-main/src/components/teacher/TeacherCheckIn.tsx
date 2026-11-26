@@ -1,6 +1,7 @@
 import { Monitor, ShieldCheck } from 'lucide-react';
-import { useState, useEffect } from 'react';
-import { RefreshCw, Users, Wifi, WifiOff, Plus, X, Clock, CheckCircle } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { RefreshCw, Users, Wifi, Plus, X, Clock } from 'lucide-react';
+import QRCode from 'qrcode';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { api, getTeacherCourses } from '@/lib/api';
@@ -12,6 +13,38 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
+function LocalQrImage({ value, size = 220, className = '' }: { value: string; size?: number; className?: string }) {
+  const [dataUrl, setDataUrl] = useState<string>('');
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!value) {
+      setDataUrl('');
+      return;
+    }
+    QRCode.toDataURL(value, { width: size, margin: 1 })
+      .then((url) => {
+        if (!cancelled) setDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setDataUrl('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [value, size]);
+
+  if (!dataUrl) {
+    return (
+      <div className={`flex items-center justify-center bg-muted rounded-xl text-xs text-muted-foreground ${className}`}>
+        جاري توليد QR...
+      </div>
+    );
+  }
+
+  return <img src={dataUrl} alt="QR Code" className={className} />;
+}
+
 interface AttendanceSession {
   id: string;
   course_id: string;
@@ -20,6 +53,8 @@ interface AttendanceSession {
   date: string;
   time: string;
   qr_code: string;
+  live_qr?: string;
+  expires_in?: number;
   status: 'active' | 'closed';
   created_by: string;
   created_at: string;
@@ -32,12 +67,14 @@ interface Course {
   code: string;
   name: string;
   teacher_id: string;
+  schedule_day?: string;
+  schedule_time?: string;
+  room?: string;
 }
 
 export function TeacherCheckIn() {
   const [sessions, setSessions] = useState<AttendanceSession[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
-  const [isOffline, setIsOffline] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [selectedSession, setSelectedSession] = useState<AttendanceSession | null>(null);
   const [attendees, setAttendees] = useState<any[]>([]);
@@ -47,6 +84,8 @@ export function TeacherCheckIn() {
   const [liveQrCode, setLiveQrCode] = useState<string>('');
   const [countdown, setCountdown] = useState<number>(20);
   const [liveAttendeesCount, setLiveAttendeesCount] = useState<number>(0);
+  const lastStepRef = useRef<number>(Math.floor(Date.now() / 1000 / 20));
+  const fetchingLiveQrRef = useRef<boolean>(false);
 
   const { toast } = useToast();
   const { user } = useAuth();
@@ -56,12 +95,27 @@ export function TeacherCheckIn() {
     course_id: '',
     date: new Date().toISOString().split('T')[0],
     time: new Date().toTimeString().slice(0, 5),
+    room: '',
   });
 
   useEffect(() => {
     loadCourses();
     loadActiveSessions();
   }, []);
+
+  // Keep active session card dynamic QR & attendees synced across 20s TOTP boundaries
+  useEffect(() => {
+    if (sessions.length === 0 || liveProjectorSession) return;
+    lastStepRef.current = Math.floor(Date.now() / 1000 / 20);
+    const stepWatcher = setInterval(() => {
+      const currentStep = Math.floor(Date.now() / 1000 / 20);
+      if (currentStep !== lastStepRef.current) {
+        lastStepRef.current = currentStep;
+        loadActiveSessions();
+      }
+    }, 1000);
+    return () => clearInterval(stepWatcher);
+  }, [sessions.length, liveProjectorSession]);
 
   // Dynamic 20s QR Projector Polling & Countdown
   useEffect(() => {
@@ -70,10 +124,12 @@ export function TeacherCheckIn() {
     let active = true;
 
     const fetchDynamicQR = async () => {
+      if (fetchingLiveQrRef.current) return;
+      fetchingLiveQrRef.current = true;
       try {
         const response = await api.get('/attendance/teacher/sessions/' + liveProjectorSession.id + '/live-qr');
         if (response.success && active && response.data) {
-          setLiveQrCode(response.data.qrCode);
+          setLiveQrCode(response.data.qrCode || response.data.qr_code);
           setCountdown(response.data.expiresIn || 20);
           if (response.data.attendeesCount !== undefined) {
             setLiveAttendeesCount(response.data.attendeesCount);
@@ -81,6 +137,8 @@ export function TeacherCheckIn() {
         }
       } catch (err) {
         console.error('Failed to fetch live dynamic QR:', err);
+      } finally {
+        fetchingLiveQrRef.current = false;
       }
     };
 
@@ -90,7 +148,7 @@ export function TeacherCheckIn() {
       setCountdown((prev) => {
         if (prev <= 1) {
           fetchDynamicQR();
-          return 20;
+          return 1;
         }
         return prev - 1;
       });
@@ -157,17 +215,24 @@ export function TeacherCheckIn() {
 
     setLoading(true);
     try {
-      const response = await api.post('/attendance/teacher/sessions', formData);
+      const selectedCourse = courses.find((c) => c.id === formData.course_id);
+      const sessionPayload = {
+        ...formData,
+        room: formData.room || selectedCourse?.room || 'قاعة المحاضرات الرئيسية',
+      };
+      const response = await api.post('/attendance/teacher/sessions', sessionPayload);
       if (response.success) {
+        const createdQr = response.data.live_qr || response.data.qr_code || response.data.qrCode;
         toast({
           title: 'تم إنشاء الجلسة بنجاح',
-          description: `رمز QR: ${response.data.qr_code}`,
+          description: `رمز QR: ${createdQr}`,
         });
         setShowCreateForm(false);
         setFormData({
           course_id: '',
           date: new Date().toISOString().split('T')[0],
           time: new Date().toTimeString().slice(0, 5),
+          room: '',
         });
         loadActiveSessions();
       }
@@ -186,9 +251,13 @@ export function TeacherCheckIn() {
     try {
       const response = await api.post(`/attendance/teacher/sessions/${sessionId}/refresh-qr`, {});
       if (response.success) {
+        const refreshedQr = response.data.live_qr || response.data.qr_code || response.data.qrCode;
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, live_qr: refreshedQr } : s))
+        );
         toast({
           title: 'تم تجديد الرمز',
-          description: `الرمز الجديد: ${response.data.qr_code}`,
+          description: `الرمز الجديد: ${refreshedQr}`,
         });
         loadActiveSessions();
       }
@@ -201,20 +270,22 @@ export function TeacherCheckIn() {
     }
   };
 
-  const closeSession = async (sessionId: string) => {
+  const closeSession = async (sessionId: string): Promise<boolean> => {
     try {
       await api.post(`/attendance/teacher/sessions/${sessionId}/close`, {});
       toast({
         title: 'تم إغلاق الجلسة',
         description: 'لم يعد بإمكان الطلاب التسجيل',
       });
-      loadActiveSessions();
+      await loadActiveSessions();
+      return true;
     } catch (error: any) {
       toast({
         title: 'خطأ في إغلاق الجلسة',
         description: error.message || 'يرجى المحاولة مرة أخرى',
         variant: 'destructive',
       });
+      return false;
     }
   };
 
@@ -240,6 +311,8 @@ export function TeacherCheckIn() {
   };
 
   if (showCreateForm) {
+    const selectedCourseForForm = courses.find((c) => c.id === formData.course_id);
+
     return (
       <div className="space-y-6 animate-slideUp">
         <div className="flex items-center justify-between">
@@ -254,7 +327,15 @@ export function TeacherCheckIn() {
             <label className="block text-sm font-medium mb-2">المادة</label>
             <select
               value={formData.course_id}
-              onChange={(e) => setFormData({ ...formData, course_id: e.target.value })}
+              onChange={(e) => {
+                const cid = e.target.value;
+                const c = courses.find((x) => x.id === cid);
+                setFormData({
+                  ...formData,
+                  course_id: cid,
+                  room: c?.room || '',
+                });
+              }}
               className="w-full p-3 border border-border rounded-xl bg-background"
             >
               <option value="">اختر المادة</option>
@@ -264,6 +345,20 @@ export function TeacherCheckIn() {
                 </option>
               ))}
             </select>
+            {selectedCourseForForm && (
+              <div className="mt-2 p-3 rounded-xl bg-primary/5 border border-primary/20 space-y-1 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-foreground">الجدول الدراسي المعتمد:</span>
+                  <span className="font-bold text-primary">
+                    {selectedCourseForForm.schedule_day || 'الأحد - الثلاثاء'} • {selectedCourseForForm.schedule_time || '10:00 - 11:30'}
+                  </span>
+                </div>
+                <div className="text-muted-foreground flex items-center justify-between pt-1 border-t border-primary/10">
+                  <span>القاعة الدراسية:</span>
+                  <span className="font-medium text-foreground">{selectedCourseForForm.room || 'المدرج 101'}</span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
@@ -318,7 +413,9 @@ export function TeacherCheckIn() {
             لا توجد جلسات حضور نشطة
           </div>
         ) : (
-          sessions.map((session) => (
+          sessions.map((session) => {
+            const activeCardQr = session.live_qr || session.qr_code;
+            return (
             <div key={session.id} className="bg-card p-4 rounded-2xl border border-border">
               <div className="flex justify-between items-start mb-3">
                 <div>
@@ -330,8 +427,8 @@ export function TeacherCheckIn() {
                   </p>
                 </div>
                 <div className="text-right">
-                  <div className="text-xs font-mono bg-muted px-2 py-1 rounded">
-                    {session.qr_code}
+                  <div className="text-xs font-mono bg-muted px-2 py-1 rounded max-w-[230px] truncate" title={activeCardQr}>
+                    {activeCardQr}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
                     {session.attendees_count} حاضر
@@ -339,13 +436,18 @@ export function TeacherCheckIn() {
                 </div>
               </div>
 
-              {/* QR Code */}
-              <div className="flex justify-center mb-3">
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${session.qr_code}`}
-                  alt="QR Code"
-                  className="w-32 h-32 rounded-lg border"
+              {/* Local Dynamic QR Code */}
+              <div className="flex flex-col items-center gap-1.5 mb-3">
+                <LocalQrImage
+                  value={activeCardQr}
+                  size={150}
+                  className="w-32 h-32 rounded-lg border bg-white p-1"
                 />
+                {session.live_qr && (
+                  <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                    رمز ديناميكي متجدد (20 ثانية)
+                  </span>
+                )}
               </div>
 
               {/* Actions */}
@@ -355,8 +457,9 @@ export function TeacherCheckIn() {
                   size="sm"
                   onClick={() => {
                     setLiveProjectorSession(session);
-                    setLiveQrCode(session.qr_code);
-                    setCountdown(20);
+                    setLiveQrCode(activeCardQr);
+                    setLiveAttendeesCount(session.attendees_count ?? 0);
+                    setCountdown(session.expires_in || 20);
                   }}
                   className="flex-1 bg-primary text-primary-foreground font-bold shadow-sm"
                 >
@@ -393,44 +496,37 @@ export function TeacherCheckIn() {
                 </Button>
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
 
-      {/* Offline Mode Toggle */}
+      {/* Local QR Security Note */}
       <div className="pt-4 border-t border-border">
-        <div className="bg-warning/10 border border-warning/20 p-3 rounded-xl flex justify-between items-center">
+        <div className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl flex justify-between items-center">
           <div>
             <span className="text-sm font-bold text-foreground flex items-center gap-2">
-              {isOffline ? (
-                <WifiOff className="w-4 h-4 text-destructive" />
-              ) : (
-                <Wifi className="w-4 h-4 text-success" />
-              )}
-              وضع عدم الاتصال
+              <Wifi className="w-4 h-4 text-emerald-500" />
+              توليد محلي آمن لرموز الـ QR
             </span>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              {isOffline ? 'الحفظ محلي - المزامنة لاحقاً' : 'متصل بالخادم'}
+              يتم توليد الرموز محلياً داخل المتصفح دون إرسال رموز TOTP لأي خادم خارجي.
             </p>
           </div>
-          <button
-            onClick={() => setIsOffline(!isOffline)}
-            className={`w-12 h-7 rounded-full relative transition-colors duration-300 shadow-inner cursor-pointer ${
-              isOffline ? 'bg-warning' : 'bg-muted'
-            }`}
-          >
-            <span
-              className={`block w-5 h-5 bg-card rounded-full absolute top-1 transition-transform duration-300 shadow-sm ${
-                isOffline ? 'right-1' : 'left-1'
-              }`}
-            />
-          </button>
         </div>
       </div>
 
 
       {/* Live Projector Dynamic QR Dialog */}
-      <Dialog open={!!liveProjectorSession} onOpenChange={(v) => { if (!v) setLiveProjectorSession(null); }}>
+      <Dialog
+        open={!!liveProjectorSession}
+        onOpenChange={(v) => {
+          if (!v) {
+            setLiveProjectorSession(null);
+            loadActiveSessions();
+          }
+        }}
+      >
         <DialogContent className="max-w-md text-center p-6 sm:p-8">
           <DialogHeader>
             <DialogTitle className="text-xl font-bold flex items-center justify-center gap-2 text-foreground">
@@ -446,11 +542,11 @@ export function TeacherCheckIn() {
                 <div className="text-xs text-muted-foreground font-mono">{liveProjectorSession.course_code}</div>
               </div>
 
-              {/* Big Dynamic QR Code */}
+              {/* Big Local Dynamic QR Code */}
               <div className="relative inline-block mx-auto p-4 bg-white rounded-3xl border-2 border-primary/20 shadow-xl">
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(liveQrCode || liveProjectorSession.qr_code)}`}
-                  alt="Dynamic QR Code"
+                <LocalQrImage
+                  value={liveQrCode || liveProjectorSession.live_qr || liveProjectorSession.qr_code}
+                  size={260}
                   className="w-56 h-56 mx-auto rounded-xl"
                 />
               </div>
@@ -486,16 +582,21 @@ export function TeacherCheckIn() {
                 <Button
                   variant="outline"
                   className="flex-1"
-                  onClick={() => setLiveProjectorSession(null)}
+                  onClick={() => {
+                    setLiveProjectorSession(null);
+                    loadActiveSessions();
+                  }}
                 >
                   إغلاق الشاشة
                 </Button>
                 <Button
                   variant="destructive"
                   className="flex-1"
-                  onClick={() => {
-                    closeSession(liveProjectorSession.id);
-                    setLiveProjectorSession(null);
+                  onClick={async () => {
+                    const closed = await closeSession(liveProjectorSession.id);
+                    if (closed) {
+                      setLiveProjectorSession(null);
+                    }
                   }}
                 >
                   إنهاء جلسة الحضور

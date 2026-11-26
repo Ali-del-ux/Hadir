@@ -4,6 +4,25 @@ import { PageHeader } from '@/components/shared/PageHeader';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { Course, Lecture } from '@/types';
 import { api } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
+
+function formatFileSize(size: unknown): string {
+  if (typeof size === 'number' && !isNaN(size) && size > 0) {
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+    return `${size} B`;
+  }
+  if (typeof size === 'string' && size.trim()) {
+    const asNum = Number(size);
+    if (!isNaN(asNum) && asNum > 0) {
+      return asNum >= 1024 * 1024
+        ? `${(asNum / (1024 * 1024)).toFixed(1)} MB`
+        : `${Math.max(1, Math.round(asNum / 1024))} KB`;
+    }
+    return size;
+  }
+  return 'PDF';
+}
 
 interface CourseDetailsProps {
   course: Course;
@@ -13,6 +32,7 @@ interface CourseDetailsProps {
 export function CourseDetails({ course, onBack }: CourseDetailsProps) {
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
 
   useEffect(() => {
     const loadLectures = async () => {
@@ -20,13 +40,19 @@ export function CourseDetails({ course, onBack }: CourseDetailsProps) {
         setLoading(true);
         const response = await api.get(`/lectures/student/course/${course.id}`);
         const lecturesData = response.data || [];
-        // Map fields if needed
-        const mappedLectures = lecturesData.map((l: any) => ({
-          ...l,
-          date: new Date(l.date).toLocaleDateString('ar-SA'),
-          fileSize: l.file_size || 'Unknown',
-          fileUrl: l.file_url || null
-        }));
+        // Map fields safely with graceful date & file size handling
+        const mappedLectures = lecturesData.map((l: any) => {
+          const rawDate = l.date || l.created_at || l.createdAt;
+          const parsedDate = rawDate && !isNaN(new Date(rawDate).getTime())
+            ? new Date(rawDate).toLocaleDateString('ar-LY', { year: 'numeric', month: 'short', day: 'numeric' })
+            : '—';
+          return {
+            ...l,
+            date: parsedDate,
+            fileSize: formatFileSize(l.file_size ?? l.fileSize),
+            fileUrl: l.file_url || l.fileUrl || null
+          };
+        });
         setLectures(mappedLectures);
       } catch (error) {
         console.error('Error loading lectures:', error);
@@ -40,11 +66,32 @@ export function CourseDetails({ course, onBack }: CourseDetailsProps) {
     }
   }, [course.id]);
 
-  const handleDownload = (lecture: Lecture & { fileUrl?: string }) => {
-    if (lecture.fileUrl) {
-      window.open(lecture.fileUrl, '_blank');
-    } else {
-      alert('الرابط غير متوفر');
+  const handleDownload = async (lecture: Lecture & { fileUrl?: string }) => {
+    try {
+      const token = localStorage.getItem('hadir_token');
+      const response = await fetch(`/api/lectures/student/${encodeURIComponent(lecture.id)}/download`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        throw new Error('فشل تحميل ملف المحاضرة');
+      }
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = lecture.file_name || `${lecture.title}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(blobUrl);
+      document.body.removeChild(link);
+    } catch (err: any) {
+      toast({
+        title: 'خطأ في التحميل',
+        description: err.message || 'تعذر تحميل ملف المحاضرة',
+        variant: 'destructive',
+      });
     }
   };
 

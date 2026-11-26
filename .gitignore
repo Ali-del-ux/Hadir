@@ -38,3 +38,11 @@ Thumbs.db
 *.p12
 *.pfx
 !.env.example
+
+# Local runtime state, logs, private uploads, and agent scratch directories
+.agents/teamwork/
+**/.hadir_mock_state.local.json
+**/*.local
+Backend/logs/
+Backend/storage/private/uploads/*
+!Backend/storage/private/uploads/.gitkeep

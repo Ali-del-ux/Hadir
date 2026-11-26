@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { FileText, Calendar, UploadCloud, Info, Loader2, CheckCircle2, Clock, Download, ArrowRight, Award, MessageSquare } from 'lucide-react';
+import { FileText, Calendar, UploadCloud, Info, Loader2, CheckCircle2, Clock, Download, ArrowRight, Award, MessageSquare, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
 import { api } from '@/lib/api';
 import { Assignment } from '@/types';
 
@@ -12,6 +13,7 @@ interface StudentAssignmentsProps {
 }
 
 export function StudentAssignments({ onBack }: StudentAssignmentsProps) {
+  const { user } = useAuth();
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -75,6 +77,35 @@ export function StudentAssignments({ onBack }: StudentAssignmentsProps) {
       });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDownloadAttachment = async (assignment: Assignment) => {
+    try {
+      const token = localStorage.getItem('hadir_token');
+      const response = await fetch(`/api/assignments/student/${encodeURIComponent(assignment.id)}/download`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        throw new Error('فشل تحميل مرفق الواجب');
+      }
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = assignment.file_name || `assignment-${assignment.id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(blobUrl);
+      document.body.removeChild(link);
+    } catch (err: any) {
+      toast({
+        title: 'خطأ في التحميل',
+        description: err.message || 'تعذر تحميل مرفق الواجب',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -217,15 +248,14 @@ export function StudentAssignments({ onBack }: StudentAssignmentsProps) {
                   {/* Teacher Attachment Download */}
                   {assignment.file_url && (
                     <div className="mt-2.5">
-                      <a
-                        href={assignment.file_url}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadAttachment(assignment)}
                         className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-primary hover:underline bg-primary/10 px-2.5 py-1 rounded-lg"
                       >
                         <Download className="w-3 h-3" />
                         <span>تحميل ورقة الأسئلة / مرفق الواجب</span>
-                      </a>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -253,11 +283,22 @@ export function StudentAssignments({ onBack }: StudentAssignmentsProps) {
                   ) : (
                     <Button
                       size="sm"
+                      disabled={Boolean(user?.is_frozen)}
                       onClick={() => setSelectedAssignment(assignment)}
+                      title={user?.is_frozen ? 'حسابك مجمد أكاديمياً - تسليم الواجبات موقوف مؤقتاً' : undefined}
                       className="gradient-primary text-primary-foreground font-bold text-xs h-9 px-4 rounded-xl shadow-sm"
                     >
-                      <UploadCloud className="w-3.5 h-3.5 ml-1.5" />
-                      تسليم الحل
+                      {user?.is_frozen ? (
+                        <>
+                          <ShieldAlert className="w-3.5 h-3.5 ml-1.5" />
+                          متوقف (حساب مجمد)
+                        </>
+                      ) : (
+                        <>
+                          <UploadCloud className="w-3.5 h-3.5 ml-1.5" />
+                          تسليم الحل
+                        </>
+                      )}
                     </Button>
                   )}
                 </div>

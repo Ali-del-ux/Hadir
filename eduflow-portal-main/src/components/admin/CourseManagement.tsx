@@ -90,8 +90,19 @@ export function CourseManagement({ onBack }: CourseManagementProps) {
 
   const handleUpdate = async (updated: Course) => {
     try {
-      await api.put(`/admin/courses/${updated.id}`, updated);
-      setCourses(prev => prev.map(c => c.id === updated.id ? updated : c));
+      const payload = {
+        code: updated.code,
+        name: updated.name,
+        teacher_id: updated.teacher_id || null,
+        credit_hours: Number(updated.credit_hours || 3),
+        room: updated.room || undefined,
+        schedule_day: updated.schedule_day || undefined,
+        schedule_time: updated.schedule_time || undefined,
+        description: updated.description || undefined,
+      };
+      const res = await api.put(`/admin/courses/${updated.id}`, payload);
+      const saved = res?.data ? { ...updated, ...res.data } : updated;
+      setCourses(prev => prev.map(c => c.id === updated.id ? saved : c));
       setEditingCourse(null);
       toast({ title: 'تم التعديل', description: `تم تحديث جدول وبيانات مقرر ${updated.name}` });
     } catch (error: any) {
@@ -243,11 +254,11 @@ interface EditCourseDialogProps {
 function EditCourseDialog({ course, teachers, onClose, onUpdate }: EditCourseDialogProps) {
   const [name, setName] = useState(course.name || '');
   const [code, setCode] = useState(course.code || '');
-  const [teacherId, setTeacherId] = useState(course.teacher_id || '');
+  const [teacherId, setTeacherId] = useState(course.teacher_id || (course as any).teacherId || '');
   const [room, setRoom] = useState(course.room || 'قاعة الخوارزمي (204)');
   const [scheduleDay, setScheduleDay] = useState(course.schedule_day || 'الأحد - الثلاثاء');
   const [scheduleTime, setScheduleTime] = useState(course.schedule_time || '09:00 ص - 10:30 ص');
-  const [creditHours, setCreditHours] = useState(course.credit_hours || 3);
+  const [creditHours, setCreditHours] = useState(course.credit_hours || (course as any).creditHours || 3);
   const [description, setDescription] = useState(course.description || '');
   const { toast } = useToast();
 

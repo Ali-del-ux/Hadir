@@ -38,6 +38,20 @@ export const submitAssignment = async (
   submissionData: SubmitAssignmentRequest
 ): Promise<AssignmentSubmission> => {
   try {
+    // Defense-in-depth: block frozen students at service boundary
+    const [studentRows] = await pool.execute<any[]>(
+      `SELECT is_frozen, freeze_reason FROM users WHERE id = ? AND deleted_at IS NULL`,
+      [studentId]
+    );
+    if (studentRows.length > 0 && studentRows[0].is_frozen) {
+      const err: any = new Error(
+        studentRows[0].freeze_reason || 'حسابك مجمد أكاديمياً، لا يمكنك تسليم الواجبات'
+      );
+      err.status = 403;
+      err.code = 'ACCOUNT_FROZEN';
+      throw err;
+    }
+
     // Verify assignment exists
     const [assignment] = await pool.execute<any[]>(
       `SELECT id, course_id, due_date

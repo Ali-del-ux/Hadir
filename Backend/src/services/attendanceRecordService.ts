@@ -1,7 +1,6 @@
-import crypto from 'crypto';
 import { recalculateCourseGrade } from './gradeEngineService';
 import { pool } from '../config/database';
-import { getAttendanceSessionByQRCode } from './attendanceService';
+import { computeAttendanceTOTP, QR_STEP_SECONDS } from './attendanceService';
 
 export interface MarkAttendanceRequest {
   qr_code: string;
@@ -23,6 +22,16 @@ export interface AttendanceRecord {
   time: string;
 }
 
+class AttendanceError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status = 400, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 // Mark attendance by QR code scan
 export const markAttendanceByQR = async (
   studentId: string,
@@ -36,59 +45,83 @@ export const markAttendanceByQR = async (
   try {
     await connection.beginTransaction();
 
-    // 1. Check if dynamic QR format: HADIR:sessionId:window:token
-    if (qrCode.startsWith('HADIR:')) {
-      const parts = qrCode.split(':');
-      if (parts.length === 4) {
-        const [_, sessId, winStr, token] = parts;
-        const clientWindow = parseInt(winStr, 10);
-        const interval = 20;
-        const now = Math.floor(Date.now() / 1000);
-        const currentWindow = Math.floor(now / interval);
-
-        // Allow 20s window (current or previous window for 20s tolerance)
-        if (Math.abs(currentWindow - clientWindow) > 1) {
-          throw new Error('رمز الـ QR منتهي الصلاحية (صالح لمدة 20 ثانية فقط). يرجى مسح الرمز الجديد المعروض حالياً');
-        }
-
-        const [sRows] = await connection.execute<any[]>(
-          `SELECT id, course_id, status, qr_secret FROM attendance_sessions WHERE id = ? FOR UPDATE`,
-          [sessId]
-        );
-        if (sRows.length === 0 || sRows[0].status !== 'active') {
-          throw new Error('جلسة الحضور مغلقة أو غير متاحة');
-        }
-
-        const secret = sRows[0].qr_secret;
-        if (secret) {
-          const expectedToken = crypto.createHmac('sha256', secret).update(String(clientWindow)).digest('hex').substring(0, 8).toUpperCase();
-          if (token !== expectedToken) {
-            throw new Error('رمز التحقق غير صحيح أو تم التلاعب به');
-          }
-        }
-
-        resolvedSessionId = sRows[0].id;
-        resolvedCourseId = sRows[0].course_id;
-      }
+    // 0. Enforce account freeze inside service as defense-in-depth
+    const [userRows] = await connection.execute<any[]>(
+      `SELECT is_frozen, freeze_reason FROM users WHERE id = ? AND deleted_at IS NULL FOR UPDATE`,
+      [studentId]
+    );
+    if (userRows.length === 0) {
+      throw new AttendanceError('المستخدم غير موجود', 404);
+    }
+    if (userRows[0].is_frozen) {
+      throw new AttendanceError(
+        userRows[0].freeze_reason || 'حسابك مجمد أكاديمياً، لا يمكنك تسجيل الحضور',
+        403,
+        'ACCOUNT_FROZEN'
+      );
     }
 
-    // 2. Legacy / static fallback
+    // 1. Check dynamic QR format: HADIR:sessionId:window:token
+    if (qrCode.startsWith('HADIR:')) {
+      const parts = qrCode.split(':');
+      if (parts.length !== 4 || !/^\d+$/.test(parts[2])) {
+        throw new AttendanceError('صيغة رمز الـ QR غير صالحة', 400);
+      }
+
+      const [_, sessId, winStr, token] = parts;
+      const clientWindow = parseInt(winStr, 10);
+      const now = Math.floor(Date.now() / 1000);
+      const currentWindow = Math.floor(now / QR_STEP_SECONDS);
+
+      if (Math.abs(currentWindow - clientWindow) > 1) {
+        throw new AttendanceError(
+          'رمز الـ QR منتهي الصلاحية (صالح لمدة 20 ثانية فقط). يرجى مسح الرمز الجديد المعروض حالياً',
+          400
+        );
+      }
+
+      const [sRows] = await connection.execute<any[]>(
+        `SELECT id, course_id, status, qr_secret FROM attendance_sessions WHERE id = ? FOR UPDATE`,
+        [sessId]
+      );
+      if (sRows.length === 0 || sRows[0].status !== 'active') {
+        throw new AttendanceError('جلسة الحضور مغلقة أو غير متاحة', 400);
+      }
+
+      const secret = sRows[0].qr_secret;
+      if (!secret) {
+        throw new AttendanceError('الجلسة غير مهيأة برمز تحقق أمني (qr_secret)', 400);
+      }
+
+      const expectedToken = computeAttendanceTOTP(secret, sessId, clientWindow);
+      if (token.toUpperCase() !== expectedToken) {
+        throw new AttendanceError('رمز التحقق غير صحيح أو تم التلاعب به', 400);
+      }
+
+      resolvedSessionId = sRows[0].id;
+      resolvedCourseId = sRows[0].course_id;
+    }
+
+    // 2. Legacy / static fallback (rejected whenever qr_secret is present)
     if (!resolvedSessionId) {
       const [legacyRows] = await connection.execute<any[]>(
         `SELECT id, course_id, status, qr_secret FROM attendance_sessions WHERE qr_code = ? FOR UPDATE`,
         [qrCode]
       );
       if (legacyRows.length === 0 || legacyRows[0].status !== 'active') {
-        throw new Error('رمز QR غير صالح أو أن جلسة الحضور مغلقة');
+        throw new AttendanceError('رمز QR غير صالح أو أن جلسة الحضور مغلقة', 400);
       }
       if (legacyRows[0].qr_secret) {
-        throw new Error('هذه الجلسة مؤمنة برمز QR ديناميكي متغير كل 20 ثانية. يُمنع استخدام الرمز القديم أو الثابت، يرجى مسح الرمز الجديد من الشاشة.');
+        throw new AttendanceError(
+          'هذه الجلسة مؤمنة برمز QR ديناميكي متغير كل 20 ثانية. يُمنع استخدام الرمز القديم أو الثابت، يرجى مسح الرمز الجديد من الشاشة.',
+          400
+        );
       }
       resolvedSessionId = legacyRows[0].id;
       resolvedCourseId = legacyRows[0].course_id;
     }
 
-    // 3. Verify student enrollment in course
+    // 3. Verify active student enrollment in course
     const [enrollment] = await connection.execute<any[]>(
       `SELECT id FROM enrollments 
        WHERE course_id = ? AND student_id = ? AND status = 'active' FOR UPDATE`,
@@ -96,10 +129,10 @@ export const markAttendanceByQR = async (
     );
 
     if (enrollment.length === 0) {
-      throw new Error('أنت غير مسجل في هذا المقرر الدراسي');
+      throw new AttendanceError('أنت غير مسجل في هذا المقرر الدراسي', 403);
     }
 
-    // 4. Anti-Proxy Single Device Protection: Prevent recording for multiple students on same device in same session
+    // 4. Anti-Proxy Single Device Protection
     if (deviceFingerprint) {
       const [peerRows] = await connection.execute<any[]>(
         `SELECT ar.student_id, u.name 
@@ -110,11 +143,14 @@ export const markAttendanceByQR = async (
       );
 
       if (peerRows.length > 0) {
-        throw new Error(`مرفوض أمنياً: تم استخدام هذا الهاتف/الجهاز لتسجيل حضور الطالب (${peerRows[0].name}) في نفس الجلسة. يُمنع تسجيل الحضور بالنيابة عن الزملاء.`);
+        throw new AttendanceError(
+          `مرفوض أمنياً: تم استخدام هذا الهاتف/الجهاز لتسجيل حضور الطالب (${peerRows[0].name}) في نفس الجلسة. يُمنع تسجيل الحضور بالنيابة عن الزملاء.`,
+          400
+        );
       }
     }
 
-    // 5. Mark attendance with INSERT IGNORE (idempotent, safe against duplicate rapid taps)
+    // 5. Mark attendance with INSERT IGNORE (idempotent for same student)
     await connection.execute(
       `INSERT IGNORE INTO attendance_records (session_id, student_id, method, attendance_time, device_fingerprint)
        VALUES (?, ?, 'qr', CURRENT_TIMESTAMP, ?)`,
@@ -129,14 +165,11 @@ export const markAttendanceByQR = async (
     connection.release();
   }
 
-  // 5. Trigger live grade update (attendance factor in Gradebook)
+  // 6. Sync Gradebook synchronously after attendance
   if (resolvedCourseId) {
-    recalculateCourseGrade(resolvedCourseId, studentId).catch((err) =>
-      console.error('Grade recalculate after attendance error:', err)
-    );
+    await recalculateCourseGrade(resolvedCourseId, studentId);
   }
 
-  // 6. Return record
   const [record] = await pool.execute<any[]>(
     `SELECT 
       ar.id,
@@ -162,7 +195,7 @@ export const markAttendanceByQR = async (
   );
 
   if (record.length === 0) {
-    throw new Error('فشل تسجيل الحضور');
+    throw new AttendanceError('فشل تسجيل الحضور', 500);
   }
 
   const row = record[0];
@@ -182,18 +215,19 @@ export const markAttendanceByQR = async (
   };
 };
 
-// Mark attendance manually (by teacher)
+// Mark attendance manually (by teacher or admin)
 export const markAttendanceManually = async (
   sessionId: string,
   studentId: string,
-  teacherId: string
+  actorId: string,
+  actorRole?: string
 ): Promise<AttendanceRecord> => {
   try {
-    // Verify session exists and belongs to teacher
     const [session] = await pool.execute<any[]>(
-      `SELECT id, course_id, created_by, status 
-       FROM attendance_sessions 
-       WHERE id = ?`,
+      `SELECT as2.id, as2.course_id, as2.created_by, as2.status, c.teacher_id
+       FROM attendance_sessions as2
+       JOIN courses c ON as2.course_id = c.id
+       WHERE as2.id = ?`,
       [sessionId]
     );
 
@@ -201,7 +235,11 @@ export const markAttendanceManually = async (
       throw new Error('Session not found');
     }
 
-    if (session[0].created_by !== teacherId) {
+    if (
+      actorRole !== 'admin' &&
+      session[0].teacher_id !== actorId &&
+      session[0].created_by !== actorId
+    ) {
       throw new Error('You are not authorized to mark attendance for this session');
     }
 
@@ -209,7 +247,6 @@ export const markAttendanceManually = async (
       throw new Error('Attendance session is closed');
     }
 
-    // Check if student is enrolled in the course
     const [enrollment] = await pool.execute<any[]>(
       `SELECT id FROM enrollments 
        WHERE course_id = ? AND student_id = ? AND status = 'active'`,
@@ -220,7 +257,6 @@ export const markAttendanceManually = async (
       throw new Error('Student is not enrolled in this course');
     }
 
-    // Check if already marked
     const [existing] = await pool.execute<any[]>(
       `SELECT id FROM attendance_records 
        WHERE session_id = ? AND student_id = ?`,
@@ -231,14 +267,15 @@ export const markAttendanceManually = async (
       throw new Error('Attendance already marked for this student');
     }
 
-    // Mark attendance
     await pool.execute(
       `INSERT INTO attendance_records (session_id, student_id, method, attendance_time)
        VALUES (?, ?, 'manual', CURRENT_TIMESTAMP)`,
       [sessionId, studentId]
     );
 
-    // Get the created record
+    // Sync Gradebook immediately
+    await recalculateCourseGrade(session[0].course_id, studentId);
+
     const [record] = await pool.execute<any[]>(
       `SELECT 
         ar.id,
@@ -341,14 +378,11 @@ export const getStudentAttendanceRecords = async (studentId: string, courseId?: 
 // Get attendance summary for a student in a course
 export const getStudentAttendanceSummary = async (studentId: string, courseId: string) => {
   try {
-    // Get total sessions for the course
     const [totalSessions] = await pool.execute<any[]>(
-      `SELECT COUNT(*) as count FROM attendance_sessions
-       WHERE course_id = ? AND status = 'closed'`,
+      `SELECT COUNT(*) as count FROM attendance_sessions WHERE course_id = ?`,
       [courseId]
     );
 
-    // Get attended sessions
     const [attendedSessions] = await pool.execute<any[]>(
       `SELECT COUNT(DISTINCT ar.session_id) as count
        FROM attendance_records ar
@@ -359,7 +393,7 @@ export const getStudentAttendanceSummary = async (studentId: string, courseId: s
 
     const total = parseInt(totalSessions[0].count) || 0;
     const attended = parseInt(attendedSessions[0].count) || 0;
-    const percentage = total > 0 ? Math.round((attended / total) * 100) : 0;
+    const percentage = total > 0 ? Math.round((attended / total) * 100) : null;
 
     return {
       course_id: courseId,

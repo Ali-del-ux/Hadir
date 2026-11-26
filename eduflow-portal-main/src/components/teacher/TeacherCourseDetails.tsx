@@ -3,6 +3,7 @@ import { ArrowLeft, Users, Calendar, Clock, CheckCircle, XCircle, UserCheck } fr
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
 import { Course } from '@/types';
+import { useToast } from '@/hooks/use-toast';
 
 interface TeacherCourseDetailsProps {
   course: Course;
@@ -51,6 +52,7 @@ export function TeacherCourseDetails({ course, onBack }: TeacherCourseDetailsPro
   const [loadingStudents, setLoadingStudents] = useState(false);
   const [showAttendance, setShowAttendance] = useState(false);
   const [showStudents, setShowStudents] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     loadCourseSessions();
@@ -111,8 +113,11 @@ export function TeacherCourseDetails({ course, onBack }: TeacherCourseDetailsPro
       }
     } catch (error: any) {
       console.error('Error loading enrolled students:', error);
-      // عرض رسالة خطأ للمستخدم
-      alert(error.message || 'فشل في تحميل قائمة الطلاب');
+      toast({
+        title: 'خطأ',
+        description: error.message || 'فشل في تحميل قائمة الطلاب',
+        variant: 'destructive',
+      });
     } finally {
       setLoadingStudents(false);
     }
@@ -264,7 +269,13 @@ export function TeacherCourseDetails({ course, onBack }: TeacherCourseDetailsPro
                     </div>
                   </div>
                   <div className="text-left text-xs text-muted-foreground">
-                    مسجل منذ: {new Date(student.enrollment_date).toLocaleDateString('ar-SA')}
+                    {(() => {
+                      const rawDate = (student as any).enrollment_date || (student as any).enrolled_at;
+                      const formatted = rawDate && !isNaN(new Date(rawDate).getTime())
+                        ? new Date(rawDate).toLocaleDateString('ar-SA')
+                        : '—';
+                      return <>مسجل منذ: {formatted}</>;
+                    })()}
                   </div>
                 </div>
               ))}
