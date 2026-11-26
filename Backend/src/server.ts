@@ -280,15 +280,24 @@ process.on('unhandledRejection', (reason) => {
   if (env.NODE_ENV === 'production') shutdown('unhandledRejection', 1);
 });
 
+import { ensureDatabaseInitialized } from './scripts/bootstrapDatabase';
+
 // ============================================================================
 // Start Server
 // ============================================================================
 if (env.NODE_ENV !== 'test') {
-  httpServer = app.listen(PORT, () => {
-    console.log(`\n✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅`);
-    console.log(`✅  Server running on http://localhost:${PORT} ✅`);
-    console.log(`✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅`);
-  });
+  ensureDatabaseInitialized()
+    .then(() => {
+      httpServer = app.listen(PORT, () => {
+        console.log(`\n✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅`);
+        console.log(`✅  Server running on http://localhost:${PORT} ✅`);
+        console.log(`✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅`);
+      });
+    })
+    .catch((err) => {
+      console.error('[FATAL] Database bootstrap failed:', err);
+      process.exit(1);
+    });
 }
 
 export default app;

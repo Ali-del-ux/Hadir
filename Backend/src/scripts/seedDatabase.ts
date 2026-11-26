@@ -303,26 +303,30 @@ async function seedEnrollments() {
   log(`  ✅  ${count} enrollments created`);
 }
 
-async function main() {
+export async function runSeed(): Promise<void> {
   log('🌱 Starting consolidated database seed…\n');
-  try {
-    await seedAdmins();
-    await seedTeachers();
-    await seedStudents();
-    await seedCoursesAndGradeItems();
-    await seedEnrollments();
+  await seedAdmins();
+  await seedTeachers();
+  await seedStudents();
+  await seedCoursesAndGradeItems();
+  await seedEnrollments();
 
-    log('\n✅  Seed complete!\n');
-    log('─────────────────────────────────────────');
-    log('📋  Demo & Multi-User Login Credentials:');
-    log('  Admin:    admin (or admin@hadir.edu) / admin123');
-    log('  Teacher1: teacher@test.com (T0001) / password123');
-    log('  Teacher2: asmaa@university.edu (T0002) / password123');
-    log('  Teacher3: mohammedj@university.edu (T0003) / password123');
-    log('  Student1: student1@test.com (2340033) / password123');
-    log('  Student2: 2450191@student.edu (2450191) / password123');
-    log('  Student3: 2450154@student.edu (2450154) / password123 [FROZEN]');
-    log('─────────────────────────────────────────');
+  log('\n✅  Seed complete!\n');
+  log('─────────────────────────────────────────');
+  log('📋  Demo & Multi-User Login Credentials:');
+  log('  Admin:    admin (or admin@hadir.edu) / admin123');
+  log('  Teacher1: teacher@test.com (T0001) / password123');
+  log('  Teacher2: asmaa@university.edu (T0002) / password123');
+  log('  Teacher3: mohammedj@university.edu (T0003) / password123');
+  log('  Student1: student1@test.com (2340033) / password123');
+  log('  Student2: 2450191@student.edu (2450191) / password123');
+  log('  Student3: 2450154@student.edu (2450154) / password123 [FROZEN]');
+  log('─────────────────────────────────────────');
+}
+
+async function main() {
+  try {
+    await runSeed();
     process.exit(0);
   } catch (err) {
     console.error('❌ Seed error:', err);
@@ -330,4 +334,6 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
