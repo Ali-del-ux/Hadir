@@ -59,28 +59,92 @@ async function connectWithRetry(): Promise<mysql.Connection> {
   throw lastError;
 }
 
+const TARGET_CHARSET = 'utf8mb4';
+const TARGET_COLLATION = 'utf8mb4_unicode_ci';
+
+function escapeIdentifier(identifier: string): string {
+  return `\`${identifier.replace(/`/g, '``')}\``;
+}
+
 /**
- * Ensures database schema and initial demo/seed records exist on first boot.
- * Safe no-op when the `users` table is already present.
+ * Ensures database and all tables/columns share utf8mb4_unicode_ci collation
+ * so joins never fail with ER_CANT_AGGREGATE_2COLLATIONS on hosts whose
+ * default schema collation is utf8mb4_0900_ai_ci (e.g. Railway MySQL 8).
+ */
+async function normalizeDatabaseCollations(conn: mysql.Connection): Promise<void> {
+  try {
+    await conn.query(
+      `ALTER DATABASE ${escapeIdentifier(env.DB_NAME)} CHARACTER SET ${TARGET_CHARSET} COLLATE ${TARGET_COLLATION}`
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[DB] Skipping ALTER DATABASE collation: ${message}`);
+  }
+
+  const [mismatchedTables] = await conn.query<any[]>(
+    `SELECT DISTINCT TABLE_NAME AS tableName
+     FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_TYPE = 'BASE TABLE'
+       AND (
+         TABLE_COLLATION <> ?
+         OR TABLE_NAME IN (
+           SELECT TABLE_NAME
+           FROM information_schema.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND COLLATION_NAME IS NOT NULL
+             AND COLLATION_NAME <> ?
+         )
+       )`,
+    [TARGET_COLLATION, TARGET_COLLATION]
+  );
+
+  if (!Array.isArray(mismatchedTables) || mismatchedTables.length === 0) {
+    return;
+  }
+
+  console.log(`[DB] Normalizing collation to ${TARGET_COLLATION} for ${mismatchedTables.length} table(s)...`);
+  await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+  try {
+    for (const row of mismatchedTables) {
+      const tableName = String(row.tableName);
+      await conn.query(
+        `ALTER TABLE ${escapeIdentifier(tableName)} CONVERT TO CHARACTER SET ${TARGET_CHARSET} COLLATE ${TARGET_COLLATION}`
+      );
+    }
+  } finally {
+    await conn.query('SET FOREIGN_KEY_CHECKS = 1');
+  }
+  console.log('[DB] Table collations normalized successfully.');
+}
+
+/**
+ * Ensures database schema, uniform collations, and initial seed records exist.
+ * Safe no-op when already initialized and aligned.
  */
 export async function ensureDatabaseInitialized(): Promise<void> {
+  let needsSeed = false;
   const conn = await connectWithRetry();
   try {
     const [tables] = await conn.query<any[]>("SHOW TABLES LIKE 'users'");
-    if (Array.isArray(tables) && tables.length > 0) {
+    if (!Array.isArray(tables) || tables.length === 0) {
+      console.log('[DB] Empty database detected — applying schema (init_schema.sql)...');
+      const schemaSql = loadTargetSchemaSql();
+      await conn.query(schemaSql);
+      console.log('[DB] Schema applied successfully.');
+      needsSeed = true;
+    } else {
       console.log('[DB] Schema already initialized.');
-      return;
     }
 
-    console.log('[DB] Empty database detected — applying schema (init_schema.sql)...');
-    const schemaSql = loadTargetSchemaSql();
-    await conn.query(schemaSql);
-    console.log('[DB] Schema applied successfully.');
+    await normalizeDatabaseCollations(conn);
   } finally {
     await conn.end();
   }
 
-  console.log('[DB] Running initial seed...');
-  await runSeed();
-  console.log('[DB] Database bootstrap complete.');
+  if (needsSeed) {
+    console.log('[DB] Running initial seed...');
+    await runSeed();
+    console.log('[DB] Database bootstrap complete.');
+  }
 }
