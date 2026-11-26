@@ -10,7 +10,7 @@ COPY --chown=node:node package*.json ./
 COPY --chown=node:node tsconfig.json ./
 
 # Install dependencies (including devDependencies for build)
-RUN npm ci
+RUN if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
 
 # Copy application source
 COPY --chown=node:node src ./src
@@ -30,7 +30,7 @@ WORKDIR /home/node/app
 
 # Copy only production dependencies
 COPY --chown=node:node package*.json ./
-RUN npm ci --only=production && npm cache clean --force
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev --no-audit --no-fund; fi && npm cache clean --force
 
 # Copy built artifacts from build stage
 COPY --chown=node:node --from=build /home/node/app/dist ./dist
@@ -41,8 +41,8 @@ COPY --chown=node:node --from=build /home/node/app/dist ./dist
 EXPOSE 3000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD sh -c 'wget --no-verbose --tries=1 --spider http://127.0.0.1:${PORT:-3000}/health/live || exit 1'
 
 # Start the application
 CMD ["node", "dist/server.js"]
