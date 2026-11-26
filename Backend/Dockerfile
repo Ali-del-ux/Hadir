@@ -10,7 +10,7 @@ COPY --chown=node:node package*.json ./
 COPY --chown=node:node tsconfig.json ./
 
 # Install dependencies (including devDependencies for build)
-RUN if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+RUN if [ -f package-lock.json ]; then npm ci --ignore-scripts; else npm install --ignore-scripts --no-audit --no-fund; fi
 
 # Copy application source
 COPY --chown=node:node src ./src
@@ -30,7 +30,7 @@ WORKDIR /home/node/app
 
 # Copy only production dependencies
 COPY --chown=node:node package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev --no-audit --no-fund; fi && npm cache clean --force
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev --ignore-scripts; else npm install --omit=dev --ignore-scripts --no-audit --no-fund; fi && npm cache clean --force
 
 # Copy built artifacts from build stage
 COPY --chown=node:node --from=build /home/node/app/dist ./dist
