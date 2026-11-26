@@ -56,24 +56,50 @@ export function StudentFinancialRecord() {
   const [paying, setPaying] = useState(false);
 
   useEffect(() => {
-    loadFinancials();
+    void loadFinancials(false);
   }, []);
 
-  const loadFinancials = async () => {
+  useEffect(() => {
+    const syncOnFocus = () => {
+      if (document.visibilityState === 'visible') {
+        void loadFinancials(true);
+      }
+    };
+    window.addEventListener('focus', syncOnFocus);
+    document.addEventListener('visibilitychange', syncOnFocus);
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && !showPayDialog) {
+        void loadFinancials(true);
+      }
+    }, 8000);
+
+    return () => {
+      window.removeEventListener('focus', syncOnFocus);
+      document.removeEventListener('visibilitychange', syncOnFocus);
+      window.clearInterval(intervalId);
+    };
+  }, [showPayDialog]);
+
+  const loadFinancials = async (silent = false) => {
     try {
-      setLoading(true);
-      const res = await api.get('/financials/my-status');
+      if (!silent) setLoading(true);
+      const [res] = await Promise.all([
+        api.get('/financials/my-status'),
+        refreshUser(),
+      ]);
       if (res.success && res.data) {
         setFinancials(res.data);
       }
     } catch (err: any) {
-      toast({
-        title: 'خطأ',
-        description: err.message || 'فشل في تحميل السجل المالي',
-        variant: 'destructive',
-      });
+      if (!silent) {
+        toast({
+          title: 'خطأ',
+          description: err.message || 'فشل في تحميل السجل المالي',
+          variant: 'destructive',
+        });
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -180,7 +206,7 @@ export function StudentFinancialRecord() {
           <Button 
             variant="outline" 
             size="sm" 
-            onClick={loadFinancials} 
+            onClick={() => loadFinancials(false)} 
             disabled={loading}
             className="flex items-center gap-1.5"
           >

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Home, QrCode, BarChart2, User, Settings, FileCheck, Calendar, CreditCard, AlertTriangle } from 'lucide-react';
 import { AppShell, NavItem } from '@/components/layout/AppShell';
 import { StudentHome } from '@/components/student/StudentHome';
@@ -14,9 +14,36 @@ import { Course } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
 
 export function StudentDashboard() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const [activeTab, setActiveTab] = useState('home');
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
+
+  // Keep student freeze/account status synced in real time across tab changes,
+  // window focus, and periodic background checks.
+  useEffect(() => {
+    void refreshUser();
+  }, [activeTab]);
+
+  useEffect(() => {
+    const syncOnFocus = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshUser();
+      }
+    };
+    window.addEventListener('focus', syncOnFocus);
+    document.addEventListener('visibilitychange', syncOnFocus);
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshUser();
+      }
+    }, 10000);
+
+    return () => {
+      window.removeEventListener('focus', syncOnFocus);
+      document.removeEventListener('visibilitychange', syncOnFocus);
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   const navItems: NavItem[] = useMemo(() => [
     { id: 'home', icon: Home, label: 'الرئيسية' },

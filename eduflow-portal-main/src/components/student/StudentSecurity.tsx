@@ -71,11 +71,22 @@ export function StudentSecurity() {
 
   useEffect(() => {
     loadSecurityAndFinancials();
+    const syncOnFocus = () => {
+      if (document.visibilityState === 'visible') {
+        void loadSecurityAndFinancials(true);
+      }
+    };
+    window.addEventListener('focus', syncOnFocus);
+    document.addEventListener('visibilitychange', syncOnFocus);
+    return () => {
+      window.removeEventListener('focus', syncOnFocus);
+      document.removeEventListener('visibilitychange', syncOnFocus);
+    };
   }, []);
 
-  const loadSecurityAndFinancials = async () => {
+  const loadSecurityAndFinancials = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const [secRes, finRes] = await Promise.allSettled([
         api.get('/security/status'),
         api.get('/financials/my-status'),
@@ -91,7 +102,7 @@ export function StudentSecurity() {
     } catch (err: any) {
       console.error('Failed to load security info:', err);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 

@@ -20,6 +20,7 @@ export const apiRequest = async (endpoint: string, options: RequestInit = {} ) =
   const API_BASE_URL = '/api';
 
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    cache: 'no-store',
     ...options,
     headers, // Use the new Headers object
   });
