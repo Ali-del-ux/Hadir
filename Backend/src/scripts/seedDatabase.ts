@@ -222,8 +222,8 @@ async function seedStudents() {
     const finStatus = paidAmount >= totalTuition ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid';
 
     await pool.execute(
-      `INSERT INTO student_financials (student_id, student_name, student_number, total_tuition, paid_amount, discount, status, is_frozen, freeze_reason)
-       VALUES (?, ?, ?, ?, ?, 0.00, ?, ?, ?)
+      `INSERT INTO student_financials (student_id, student_name, student_number, total_tuition, paid_amount, discount, status, is_frozen, freeze_reason, last_payment_date)
+       VALUES (?, ?, ?, ?, ?, 0.00, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          student_name = VALUES(student_name),
          student_number = VALUES(student_number),
@@ -231,9 +231,24 @@ async function seedStudents() {
          paid_amount = VALUES(paid_amount),
          status = VALUES(status),
          is_frozen = VALUES(is_frozen),
-         freeze_reason = VALUES(freeze_reason)`,
-      [s.id, s.name, s.id, totalTuition, paidAmount, finStatus, isFrozen, freezeReason]
+         freeze_reason = VALUES(freeze_reason),
+         last_payment_date = COALESCE(last_payment_date, VALUES(last_payment_date))`,
+      [s.id, s.name, s.id, totalTuition, paidAmount, finStatus, isFrozen, freezeReason, paidAmount > 0 ? new Date() : null]
     );
+
+    if (paidAmount > 0) {
+      const [existingTx] = await pool.execute<any[]>(
+        'SELECT id FROM financial_transactions WHERE student_id = ? LIMIT 1',
+        [s.id]
+      );
+      if (existingTx.length === 0) {
+        await pool.execute(
+          `INSERT INTO financial_transactions (student_id, amount, receipt_number, payment_method, notes, created_by)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [s.id, paidAmount, `REC-INIT-${s.id}`, 'نقدي (خزينة الكلية)', 'سداد مبدئي مسجل عند تهيئة النظام', 'admin_1']
+        );
+      }
+    }
   }
 }
 

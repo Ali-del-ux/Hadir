@@ -119,6 +119,40 @@ async function normalizeDatabaseCollations(conn: mysql.Connection): Promise<void
 }
 
 /**
+ * Removes temporary smoke-test rows (if any) and ensures students with
+ * pre-paid tuition balances have an initial official receipt row.
+ */
+async function syncFinancialLedgerReceipts(conn: mysql.Connection): Promise<void> {
+  await conn.query(`DELETE FROM financial_transactions WHERE student_id LIKE 'TESTFIN%'`);
+  await conn.query(`DELETE FROM student_financials WHERE student_id LIKE 'TESTFIN%'`);
+  await conn.query(`DELETE FROM users WHERE id LIKE 'TESTFIN%'`);
+
+  await conn.query(`
+    INSERT INTO financial_transactions (student_id, amount, receipt_number, payment_method, notes, created_by)
+    SELECT
+      sf.student_id,
+      sf.paid_amount,
+      CONCAT('REC-INIT-', sf.student_id),
+      'نقدي (خزينة الكلية)',
+      'سداد مبدئي مسجل عند تهيئة النظام',
+      'admin_1'
+    FROM student_financials sf
+    JOIN users u ON sf.student_id = u.id
+    WHERE u.deleted_at IS NULL
+      AND sf.paid_amount > 0
+      AND NOT EXISTS (
+        SELECT 1 FROM financial_transactions ft WHERE ft.student_id = sf.student_id
+      )
+  `);
+
+  await conn.query(`
+    UPDATE student_financials
+    SET last_payment_date = COALESCE(last_payment_date, NOW())
+    WHERE paid_amount > 0 AND last_payment_date IS NULL
+  `);
+}
+
+/**
  * Ensures database schema, uniform collations, and initial seed records exist.
  * Safe no-op when already initialized and aligned.
  */
@@ -138,6 +172,7 @@ export async function ensureDatabaseInitialized(): Promise<void> {
     }
 
     await normalizeDatabaseCollations(conn);
+    await syncFinancialLedgerReceipts(conn);
   } finally {
     await conn.end();
   }

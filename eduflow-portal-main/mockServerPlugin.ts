@@ -2059,6 +2059,79 @@ export function mockServerPlugin(): Plugin {
             });
           }
 
+          if (apiPath === '/financials/pay-dues' && req.method === 'POST') {
+            if (authUser.role !== 'student') {
+              return sendJson(403, { success: false, message: 'متاح للطلاب فقط' });
+            }
+            const student = mockFinancialStudents.find(
+              (s) => s.student_id === authUser.id || s.student_number === authUser.student_id
+            );
+            if (!student) {
+              return sendJson(404, { success: false, message: 'سجل الطالب المالي غير موجود' });
+            }
+            const amount = Number(body.amount || 0);
+            const remaining = Math.max(0, student.total_tuition - student.paid_amount);
+            if (!Number.isFinite(amount) || amount <= 0) {
+              return sendJson(400, { success: false, message: 'المبلغ يجب أن يكون أكبر من صفر' });
+            }
+            if (remaining <= 0) {
+              return sendJson(400, { success: false, message: 'تم سداد كامل الرسوم الدراسية بالفعل، لا توجد مستحقات متبقية.' });
+            }
+            if (amount > remaining) {
+              return sendJson(400, { success: false, message: 'المبلغ المدخل يتجاوز المتبقي للسداد.' });
+            }
+
+            student.paid_amount += amount;
+            student.remaining_amount = Math.max(0, student.total_tuition - student.paid_amount);
+            student.status = student.remaining_amount <= 0 ? 'paid' : 'partial';
+            student.last_payment_date = new Date().toISOString().split('T')[0];
+
+            let unfrozen = false;
+            if (student.status === 'paid' && student.is_frozen) {
+              student.is_frozen = false;
+              student.freeze_reason = null;
+              const user = mockUsersList.find((u) => u.id === student.student_id || u.student_id === student.student_id);
+              if (user) {
+                user.is_frozen = 0;
+                user.freeze_reason = null;
+              }
+              unfrozen = true;
+            }
+
+            if (!mockFinancialTransactions[student.student_id]) mockFinancialTransactions[student.student_id] = [];
+            const receipt = `PAY-${Date.now().toString().slice(-6)}`;
+            const method = (body.payment_method || 'دفع إلكتروني (بطاقة مصرفية)').trim();
+            const ref = (body.reference_number || '').trim();
+            const notes = [body.notes?.trim(), ref ? `مرجع العملية: ${ref}` : '']
+              .filter(Boolean)
+              .join(' • ') || 'سداد إلكتروني للمستحقات عبر بوابة الطالب';
+
+            mockFinancialTransactions[student.student_id].unshift({
+              id: Date.now(),
+              amount,
+              balance_after: student.remaining_amount,
+              receipt_number: receipt,
+              payment_method: method,
+              created_at: new Date().toISOString(),
+              notes,
+            });
+
+            saveSnapshot();
+            return sendJson(200, {
+              success: true,
+              message: unfrozen
+                ? `تم سداد ${amount} د.ل بالكامل وفك تجميد حسابك تلقائياً بموجب إيصال ${receipt}`
+                : `تم سداد ${amount} د.ل بنجاح بموجب إيصال رقم ${receipt}`,
+              data: {
+                receiptNumber: receipt,
+                newPaid: student.paid_amount,
+                remainingAmount: student.remaining_amount,
+                newStatus: student.status,
+                unfrozen,
+              },
+            });
+          }
+
           if (apiPath === '/financials/summary' && req.method === 'GET') {
             if (authUser.role !== 'admin') {
               return sendJson(403, { success: false, message: 'صلاحية الإدارة فقط' });
@@ -2128,6 +2201,14 @@ export function mockServerPlugin(): Plugin {
               });
             }
 
+            const txMatch = apiPath.match(/^\/admin\/financials\/([^/]+)\/transactions$/);
+            if (txMatch && req.method === 'GET') {
+              const targetId = decodeURIComponent(txMatch[1]);
+              const student = mockFinancialStudents.find((s) => s.student_id === targetId || s.student_number === targetId);
+              const list = student ? (mockFinancialTransactions[student.student_id] || []) : [];
+              return sendJson(200, { success: true, data: list });
+            }
+
             if (apiPath === '/admin/financials/payment' && req.method === 'POST') {
               const studentId = body.student_id;
               const student = mockFinancialStudents.find((s) => s.student_id === studentId || s.student_number === studentId);
@@ -2135,13 +2216,33 @@ export function mockServerPlugin(): Plugin {
                 return sendJson(404, { success: false, message: 'سجل الطالب المالي غير موجود' });
               }
               const amount = Number(body.amount || 0);
-              if (amount <= 0) {
+              const remaining = Math.max(0, student.total_tuition - student.paid_amount);
+              if (!Number.isFinite(amount) || amount <= 0) {
                 return sendJson(400, { success: false, message: 'المبلغ يجب أن يكون أكبر من صفر' });
               }
+              if (remaining <= 0) {
+                return sendJson(400, { success: false, message: 'تم سداد كامل الرسوم الدراسية بالفعل، لا توجد مستحقات متبقية.' });
+              }
+              if (amount > remaining) {
+                return sendJson(400, { success: false, message: 'المبلغ المدخل يتجاوز المتبقي للسداد.' });
+              }
+
               student.paid_amount += amount;
               student.remaining_amount = Math.max(0, student.total_tuition - student.paid_amount);
               student.status = student.remaining_amount <= 0 ? 'paid' : 'partial';
               student.last_payment_date = new Date().toISOString().split('T')[0];
+
+              let unfrozen = false;
+              if (student.status === 'paid' && body.auto_unfreeze !== false && student.is_frozen) {
+                student.is_frozen = false;
+                student.freeze_reason = null;
+                const user = mockUsersList.find((u) => u.id === student.student_id || u.student_id === student.student_id);
+                if (user) {
+                  user.is_frozen = 0;
+                  user.freeze_reason = null;
+                }
+                unfrozen = true;
+              }
 
               if (!mockFinancialTransactions[student.student_id]) mockFinancialTransactions[student.student_id] = [];
               const receipt = body.receipt_number || `REC-${Date.now().toString().slice(-6)}`;
@@ -2158,8 +2259,16 @@ export function mockServerPlugin(): Plugin {
               saveSnapshot();
               return sendJson(200, {
                 success: true,
-                message: 'تم تسجيل إيصال القبض وسداد القسط المالي بنجاح',
-                data: student,
+                message: unfrozen
+                  ? `تم تسجيل سداد مبلغ ${amount} د.ل بنجاح بموجب إيصال رقم ${receipt} وفك تجميد الحساب تلقائياً`
+                  : `تم تسجيل سداد مبلغ ${amount} د.ل بنجاح بموجب إيصال رقم ${receipt}`,
+                data: {
+                  receiptNumber: receipt,
+                  newPaid: student.paid_amount,
+                  remainingAmount: student.remaining_amount,
+                  newStatus: student.status,
+                  unfrozen,
+                },
               });
             }
 

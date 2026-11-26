@@ -10,9 +10,12 @@ import {
   Printer, 
   AlertTriangle,
   ArrowDownLeft,
-  Building2
+  Building2,
+  Loader2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { SecureInput } from '@/components/ui/SecureInput';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { QrCode, ShieldCheck } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
@@ -30,6 +33,7 @@ interface FinancialStatus {
   transactions?: Array<{
     id: number;
     amount: number;
+    balance_after?: number;
     receipt_number: string;
     payment_method: string;
     created_at: string;
@@ -38,11 +42,18 @@ interface FinancialStatus {
 }
 
 export function StudentFinancialRecord() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const { toast } = useToast();
   const [financials, setFinancials] = useState<FinancialStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedReceipt, setSelectedReceipt] = useState<any>(null);
+
+  // Student self-service dues payment modal
+  const [showPayDialog, setShowPayDialog] = useState(false);
+  const [payAmount, setPayAmount] = useState('');
+  const [payMethod, setPayMethod] = useState('بطاقة مصرفية / تداول');
+  const [payReference, setPayReference] = useState('');
+  const [paying, setPaying] = useState(false);
 
   useEffect(() => {
     loadFinancials();
@@ -70,10 +81,55 @@ export function StudentFinancialRecord() {
     window.print();
   };
 
-  const totalTuition = Number(financials?.total_tuition || 3500);
-  const paidAmount = Number(financials?.paid_amount || 0);
-  const remainingAmount = Number(financials?.remaining_amount ?? (totalTuition - paidAmount));
+  const totalTuition = Number(financials?.total_tuition ?? 3500);
+  const paidAmount = Number(financials?.paid_amount ?? 0);
+  const remainingAmount = Math.max(0, Number(financials?.remaining_amount ?? (totalTuition - paidAmount)));
   const isPaidFull = remainingAmount <= 0;
+
+  const openPayDialog = () => {
+    setPayAmount(String(remainingAmount));
+    setPayReference(`TXN-${Date.now().toString().slice(-6)}`);
+    setShowPayDialog(true);
+  };
+
+  const handlePayDues = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amountNum = Number(payAmount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0 || amountNum > remainingAmount) {
+      toast({
+        title: 'مبلغ غير صالح',
+        description: `يرجى إدخال مبلغ بين 1 و ${remainingAmount.toLocaleString()} د.ل`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setPaying(true);
+      const res = await api.post('/financials/pay-dues', {
+        amount: amountNum,
+        payment_method: payMethod,
+        reference_number: payReference,
+      });
+      if (res.success) {
+        toast({
+          title: 'تم سداد المستحقات بنجاح',
+          description: res.message,
+        });
+        setShowPayDialog(false);
+        await loadFinancials();
+        await refreshUser();
+      }
+    } catch (err: any) {
+      toast({
+        title: 'فشل سداد المستحقات',
+        description: err.message || 'تعذر إتمام عملية الدفع، حاول مجدداً',
+        variant: 'destructive',
+      });
+    } finally {
+      setPaying(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto animate-in fade-in duration-300">
@@ -101,7 +157,17 @@ export function StudentFinancialRecord() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {!isPaidFull && (
+            <Button
+              size="sm"
+              onClick={openPayDialog}
+              className="gradient-primary text-primary-foreground font-bold flex items-center gap-1.5 shadow-sm"
+            >
+              <DollarSign className="w-4 h-4" />
+              <span>سداد المستحقات</span>
+            </Button>
+          )}
           <Button 
             variant="outline" 
             size="sm" 
@@ -250,6 +316,91 @@ export function StudentFinancialRecord() {
         )}
       </div>
 
+
+      {/* Student Pay Dues Dialog */}
+      <Dialog open={showPayDialog} onOpenChange={(open) => { if (!open) setShowPayDialog(false); }}>
+        <DialogContent className="max-w-md p-6">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-black text-foreground flex items-center gap-2">
+              <CreditCard className="w-5 h-5 text-primary" />
+              سداد المستحقات الدراسية إلكترونياً
+            </DialogTitle>
+          </DialogHeader>
+
+          <form onSubmit={handlePayDues} className="space-y-4 pt-2">
+            <div className="p-3.5 rounded-xl bg-muted/40 border border-border space-y-1 text-xs">
+              <p><b>الطالب:</b> {user?.name}</p>
+              <p><b>الرقم الجامعي:</b> <span className="font-mono">{user?.student_id || user?.id}</span></p>
+              <p>
+                <b>المتبقي للسداد:</b>{' '}
+                <span className="font-bold text-amber-600">{remainingAmount.toLocaleString()} د.ل</span>
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-foreground">المبلغ المراد سداده (د.ل)</label>
+                <button
+                  type="button"
+                  onClick={() => setPayAmount(String(remainingAmount))}
+                  className="text-[11px] font-bold text-primary hover:underline"
+                >
+                  سداد كامل المتبقي ({remainingAmount.toLocaleString()} د.ل)
+                </button>
+              </div>
+              <Input
+                type="number"
+                min="1"
+                max={remainingAmount}
+                step="any"
+                value={payAmount}
+                onChange={(e) => setPayAmount(e.target.value)}
+                className="h-11 rounded-xl font-mono text-left"
+                required
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-foreground">وسيلة الدفع الإلكتروني</label>
+              <select
+                value={payMethod}
+                onChange={(e) => setPayMethod(e.target.value)}
+                className="w-full h-11 px-3 py-2 rounded-xl border border-border bg-background text-xs leading-normal"
+              >
+                <option value="بطاقة مصرفية / تداول">بطاقة مصرفية / تداول</option>
+                <option value="خدمة سداد / ادفع لي">خدمة سداد / ادفع لي</option>
+                <option value="حوالة مصرفية مباشرة">حوالة مصرفية مباشرة</option>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-foreground">الرقم المرجعي للعملية</label>
+              <SecureInput
+                value={payReference}
+                onChange={(e) => setPayReference(e.target.value)}
+                className="h-11 rounded-xl font-mono text-left"
+                maxLen={60}
+                required
+              />
+            </div>
+
+            {financials?.is_frozen && Number(payAmount) >= remainingAmount && (
+              <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] font-bold text-emerald-700">
+                سيتم فك تجميد حسابك الأكاديمي تلقائياً فور سداد كامل المبلغ المتبقي.
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-2">
+              <Button type="button" variant="outline" className="flex-1" onClick={() => setShowPayDialog(false)}>
+                إلغاء
+              </Button>
+              <Button type="submit" disabled={paying} className="flex-1 gradient-primary text-primary-foreground font-bold">
+                {paying ? <Loader2 className="w-4 h-4 ml-1.5 animate-spin" /> : 'إتمام السداد الآن'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Official Payment Receipt Dialog */}
       <Dialog open={!!selectedReceipt} onOpenChange={(open) => { if (!open) setSelectedReceipt(null); }}>

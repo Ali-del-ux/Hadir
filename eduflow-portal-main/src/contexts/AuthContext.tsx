@@ -15,6 +15,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   login: (identifier: string, password: string) => Promise<LoginResult>;
   verify2FA: (tempToken: string, totpCode: string, tempUserId?: string) => Promise<LoginResult>;
+  refreshUser: () => Promise<void>;
   logout: () => void;
   isLoading: boolean;
 }
@@ -117,6 +118,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const refreshUser = async () => {
+    const token = localStorage.getItem('hadir_token');
+    if (!token) return;
+    try {
+      const data = await apiRequest('/auth/me');
+      if (data.success && data.user) {
+        setUser(data.user);
+        localStorage.setItem('hadir_user', JSON.stringify(data.user));
+      }
+    } catch {
+      // Ignore transient refresh failure; token validity is checked by apiRequest
+    }
+  };
+
   const logout = () => {
     setUser(null);
     localStorage.removeItem('hadir_user');
@@ -127,7 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, verify2FA, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, verify2FA, refreshUser, logout, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

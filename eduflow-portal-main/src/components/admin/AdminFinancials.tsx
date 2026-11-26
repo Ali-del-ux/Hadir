@@ -44,7 +44,13 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
   const [receiptNumber, setReceiptNumber] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('نقدي');
   const [paymentNotes, setPaymentNotes] = useState('');
+  const [autoUnfreeze, setAutoUnfreeze] = useState(true);
   const [processingPay, setProcessingPay] = useState(false);
+
+  // Receipts History Dialog state
+  const [receiptsStudent, setReceiptsStudent] = useState<StudentFinancial | null>(null);
+  const [studentTransactions, setStudentTransactions] = useState<any[]>([]);
+  const [loadingTransactions, setLoadingTransactions] = useState(false);
 
   // Freeze Dialog state
   const [freezingStudent, setFreezingStudent] = useState<StudentFinancial | null>(null);
@@ -80,6 +86,25 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
     e.preventDefault();
     if (!payingStudent || !payAmount || Number(payAmount) <= 0) return;
 
+    const remaining = Math.max(0, Number(payingStudent.remaining_amount));
+    if (remaining <= 0) {
+      toast({
+        title: 'لا توجد مستحقات',
+        description: 'هذا الطالب مسدد لكامل الرسوم الدراسية بالفعل.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (Number(payAmount) > remaining) {
+      toast({
+        title: 'تجاوز المبلغ المتبقي',
+        description: `الحد الأقصى المتبقي على الطالب هو ${remaining.toLocaleString('ar-LY')} د.ل`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
     try {
       setProcessingPay(true);
       const res = await api.post('/admin/financials/payment', {
@@ -88,6 +113,7 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
         receipt_number: receiptNumber,
         payment_method: paymentMethod,
         notes: paymentNotes,
+        auto_unfreeze: autoUnfreeze,
       });
 
       if (res.success) {
@@ -109,6 +135,26 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
       });
     } finally {
       setProcessingPay(false);
+    }
+  };
+
+  const openReceiptsDialog = async (student: StudentFinancial) => {
+    setReceiptsStudent(student);
+    setStudentTransactions([]);
+    try {
+      setLoadingTransactions(true);
+      const res = await api.get(`/admin/financials/${encodeURIComponent(student.student_id)}/transactions`);
+      if (res.success) {
+        setStudentTransactions(res.data || []);
+      }
+    } catch (err: any) {
+      toast({
+        title: 'خطأ',
+        description: err.message || 'تعذر تحميل سجل الإيصالات',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoadingTransactions(false);
     }
   };
 
@@ -162,9 +208,9 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
                         s.student_email.toLowerCase().includes(search.toLowerCase());
     if (!matchSearch) return false;
 
-    if (filter === 'paid') return s.remaining_amount <= 0;
-    if (filter === 'debt') return s.remaining_amount > 0;
-    if (filter === 'frozen') return s.is_frozen;
+    if (filter === 'paid') return Number(s.remaining_amount) <= 0;
+    if (filter === 'debt') return Number(s.remaining_amount) > 0;
+    if (filter === 'frozen') return Boolean(s.is_frozen);
     return true;
   });
 
@@ -285,14 +331,14 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
           <table className="w-full text-right text-xs">
             <thead className="bg-muted/50 border-b border-border text-muted-foreground font-bold">
               <tr>
-                <th className="p-4">الطالب</th>
-                <th className="p-4">الرقم الجامعي</th>
-                <th className="p-4">إجمالي الرسوم</th>
-                <th className="p-4">المبلغ المسدد</th>
-                <th className="p-4">المتبقي</th>
-                <th className="p-4">الحالة المالية</th>
-                <th className="p-4">حالة الحساب</th>
-                <th className="p-4 text-center">الإجراءات</th>
+                <th className="p-3">الطالب</th>
+                <th className="p-3">الرقم الجامعي</th>
+                <th className="p-3">إجمالي الرسوم</th>
+                <th className="p-3">المسدد</th>
+                <th className="p-3">المتبقي</th>
+                <th className="p-3">الحالة المالية</th>
+                <th className="p-3">حالة الحساب</th>
+                <th className="p-3 text-center">الإجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -311,76 +357,90 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
                 </tr>
               ) : (
                 filteredStudents.map((s) => {
-                  const hasDebt = s.remaining_amount > 0;
+                  const remaining = Math.max(0, Number(s.remaining_amount));
+                  const paid = Number(s.paid_amount);
+                  const hasDebt = remaining > 0;
                   return (
                     <tr key={s.id} className="hover:bg-muted/30 transition-colors">
-                      <td className="p-4 font-bold text-foreground">
+                      <td className="p-3 font-bold text-foreground">
                         <div>{s.student_name}</div>
-                        <div className="text-[10px] text-muted-foreground font-mono font-normal">{s.student_email}</div>
+                        <div className="text-[10px] text-muted-foreground font-mono font-normal truncate max-w-[160px]">{s.student_email}</div>
                       </td>
 
-                      <td className="p-4 font-mono font-bold">{s.student_number || '—'}</td>
+                      <td className="p-3 font-mono font-bold">{s.student_number || '—'}</td>
 
-                      <td className="p-4 font-mono font-semibold">
+                      <td className="p-3 font-mono font-semibold whitespace-nowrap">
                         {Number(s.total_tuition).toLocaleString('ar-LY')} د.ل
                       </td>
 
-                      <td className="p-4 font-mono font-bold text-emerald-600">
-                        {Number(s.paid_amount).toLocaleString('ar-LY')} د.ل
+                      <td className="p-3 font-mono font-bold text-emerald-600 whitespace-nowrap">
+                        {paid.toLocaleString('ar-LY')} د.ل
                       </td>
 
-                      <td className="p-4 font-mono font-bold">
+                      <td className="p-3 font-mono font-bold whitespace-nowrap">
                         {hasDebt ? (
-                          <span className="text-rose-500">{Number(s.remaining_amount).toLocaleString('ar-LY')} د.ل</span>
+                          <span className="text-rose-500">{remaining.toLocaleString('ar-LY')} د.ل</span>
                         ) : (
                           <span className="text-emerald-500 font-semibold">0 د.ل (خالص)</span>
                         )}
                       </td>
 
-                      <td className="p-4">
-                        {s.remaining_amount <= 0 ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                      <td className="p-3">
+                        {!hasDebt ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 whitespace-nowrap">
                             <CheckCircle2 className="w-3 h-3" />
                             مسدد
                           </span>
-                        ) : s.paid_amount > 0 ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-600 border border-blue-500/20">
+                        ) : paid > 0 ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-600 border border-blue-500/20 whitespace-nowrap">
                             مسدد جزئياً
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-600 border border-rose-500/20">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-600 border border-rose-500/20 whitespace-nowrap">
                             غير مسدد
                           </span>
                         )}
                       </td>
 
-                      <td className="p-4">
+                      <td className="p-3">
                         {s.is_frozen ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-600 border border-rose-500/30">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-600 border border-rose-500/30 whitespace-nowrap">
                             <Lock className="w-3 h-3" />
                             حساب مجمّد
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 whitespace-nowrap">
                             نشط
                           </span>
                         )}
                       </td>
 
-                      <td className="p-4 text-center">
-                        <div className="flex items-center justify-center gap-1.5">
+                      <td className="p-3 text-center">
+                        <div className="flex items-center justify-center gap-1.5 flex-wrap">
                           <Button
                             size="sm"
                             variant="outline"
+                            disabled={!hasDebt}
                             onClick={() => {
                               setPayingStudent(s);
-                              setPayAmount(String(s.remaining_amount > 0 ? s.remaining_amount : '500'));
+                              setPayAmount(String(remaining));
                               setReceiptNumber(`REC-${Date.now().toString().slice(-6)}`);
+                              setAutoUnfreeze(Boolean(s.is_frozen));
                             }}
                             className="h-8 px-2.5 text-xs font-bold rounded-lg"
                           >
                             <DollarSign className="w-3.5 h-3.5 ml-1 text-emerald-600" />
                             سداد
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openReceiptsDialog(s)}
+                            className="h-8 px-2 text-xs font-bold rounded-lg text-primary hover:bg-primary/10"
+                            title="عرض إيصالات الطالب"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
                           </Button>
 
                           <Button
@@ -438,6 +498,7 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
                 <Input
                   type="number"
                   min="1"
+                  max={Math.max(1, Number(payingStudent.remaining_amount))}
                   step="any"
                   value={payAmount}
                   onChange={(e) => setPayAmount(e.target.value)}
@@ -461,7 +522,7 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
                 <select
                   value={paymentMethod}
                   onChange={(e) => setPaymentMethod(e.target.value)}
-                  className="w-full h-11 px-3 rounded-xl border border-border bg-background text-xs"
+                  className="w-full h-11 px-3 py-2 rounded-xl border border-border bg-background text-xs leading-normal"
                 >
                   <option value="نقدي">نقدي (خزينة الكلية)</option>
                   <option value="بطاقة مصرفية">بطاقة مصرفية (POS)</option>
@@ -480,6 +541,18 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
                   maxLen={200}
                 />
               </div>
+
+              {payingStudent.is_frozen && Number(payAmount) >= Number(payingStudent.remaining_amount) && (
+                <label className="flex items-center gap-2 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs font-bold text-emerald-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoUnfreeze}
+                    onChange={(e) => setAutoUnfreeze(e.target.checked)}
+                    className="rounded border-emerald-500"
+                  />
+                  فك تجميد حساب الطالب تلقائياً عند سداد كامل المستحقات
+                </label>
+              )}
 
               <div className="flex gap-2 pt-2">
                 <Button type="button" variant="outline" className="flex-1" onClick={() => setPayingStudent(null)}>
@@ -529,6 +602,51 @@ export function AdminFinancials({ onBack }: { onBack?: () => void }) {
                   {processingFreeze ? <Loader2 className="w-4 h-4 ml-1.5 animate-spin" /> : 'تأكيد التجميد'}
                 </Button>
               </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Student Receipts Dialog */}
+      <Dialog open={!!receiptsStudent} onOpenChange={(open) => !open && setReceiptsStudent(null)}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto p-6">
+          <DialogHeader>
+            <DialogTitle className="text-base font-black text-foreground flex items-center gap-2">
+              <FileText className="w-5 h-5 text-primary" />
+              سجل إيصالات الطالب: {receiptsStudent?.student_name}
+            </DialogTitle>
+          </DialogHeader>
+
+          {loadingTransactions ? (
+            <div className="py-8 text-center text-xs text-muted-foreground">
+              <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2 text-primary" />
+              جاري تحميل الإيصالات...
+            </div>
+          ) : studentTransactions.length === 0 ? (
+            <div className="py-8 text-center text-xs text-muted-foreground bg-muted/30 rounded-xl border border-dashed border-border">
+              لا توجد إيصالات مالية مسجلة لهذا الطالب
+            </div>
+          ) : (
+            <div className="space-y-2.5 pt-2">
+              {studentTransactions.map((tx) => (
+                <div key={tx.id} className="p-3 rounded-xl bg-muted/40 border border-border flex items-center justify-between text-xs">
+                  <div>
+                    <div className="font-bold text-foreground font-mono">{tx.receipt_number}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {tx.payment_method} • {new Date(tx.created_at).toLocaleDateString('ar-LY')}
+                    </div>
+                    {tx.notes && <div className="text-[10px] text-muted-foreground mt-0.5">{tx.notes}</div>}
+                  </div>
+                  <div className="text-left">
+                    <div className="font-black text-emerald-600">+{Number(tx.amount).toLocaleString('ar-LY')} د.ل</div>
+                    {tx.balance_after !== undefined && (
+                      <div className="text-[10px] text-muted-foreground">
+                        المتبقي: {Number(tx.balance_after).toLocaleString('ar-LY')} د.ل
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </DialogContent>
